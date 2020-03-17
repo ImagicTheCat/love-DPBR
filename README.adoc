@@ -11,6 +11,231 @@ endif::[]
 
 `love-DPBR` is a **D**eferred **P**hysically **B**ased **R**endering LÖVE library.
 
-It aims to be a simple and versatile tool to render 2D/3D-ish elements with PBR.
+It aims to be a simple and versatile tool to render 2D/3D with PBR.
 
-TIP: It may be used to add dynamic lighting to (for example) 2D, pseudo-isometric or Point&Click (in a 3D still space) games.
+NOTE: This library is at the frontier between 2D and 3D, so the workflow can be atypical.
+
+.Use case examples
+- 3D baked scene: Point&Click, title screen, etc.
+- 2D side/top views: lighting, etc.
+- 2D isometric/pseudo-isometric: proper overlapping of tiles, lighting, etc.
+- 3D meshes / SDF ray-marching: use the library as the pipeline for the final rendering
+- ...
+
+See link:examples[] (copy the library and launch the directory with LÖVE).
+
+== Install
+
+See link:src[].
+
+== API
+
+=== Module
+
+[source,lua]
+----
+-- Create a scene.
+--
+-- A scene defines a 2D-3D space (view space), parameters and data to properly
+-- render each material/object.
+--
+-- There are two modes for a scene: orthographic or custom.
+-- The orthographic mode allows for any kind of 2D rendering, with the
+-- possibility to adjust the depth of each element and perform meaningful
+-- transformations. The depth is positive, view->far. Correct scene dimensions
+-- are important to keep consistency for light computation (distance, etc.).
+-- The custom mode allows the use of a specific projection matrix, but reduces
+-- the API possibilities.
+--
+-- API requiring a position (like a point light) are in view space (defined by the projection).
+--
+-- w,h: render dimensions
+-- depth_projection: max depth of the scene or custom projection matrix
+--- max depth: orthographic mode, maximum depth distance of the scene (> 0)
+--- projection matrix: custom mode, LÖVE table format (row-major)
+-- sw, sh: (optional) scene dimensions for orthographic mode (default: w, h)
+-- return Scene
+M.newScene(w, h, depth_projection, sw, sh)
+----
+
+=== Scene
+
+[source, lua]
+----
+self.w, self.h -- dimensions
+self.AA_mode -- string
+self.depth -- max depth distance (0 when custom)
+self.projection_matrix -- orthographic or custom, row-major
+
+-- deferred buffers
+self.g_albedo
+self.g_normal
+self.g_MR
+self.g_emission
+self.g_depth
+self.g_luma
+
+-- Set projection.
+-- depth_projection: max depth of the scene or custom projection matrix
+--- max depth: orthographic mode, maximum depth distance of the scene (> 0)
+--- projection matrix: custom mode, LÖVE table format (row-major)
+-- sw, sh: (optional) scene dimensions for orthographic mode (default: w, h)
+Scene:setProjection(depth_projection, sw, sh)
+
+-- Set gamma used for correction.
+-- (ignored by "filmic" TMO)
+Scene:setGamma(gamma)
+
+-- Set exposure adjustment.
+Scene:setExposure(exposure)
+
+-- Set tone mapping operator.
+-- tmo: tone mapping operator (string)
+--- "raw" (scene default)
+--- "reinhard"
+--- "filmic" (Jim Hejl, Richard Burgess-Dawson)
+Scene:setToneMapping(tmo)
+
+-- Configure bloom.
+-- Scene default is (0.8,0.5,6.5,0.1).
+--
+-- threshold: level of brightness
+-- knee: 0-1 (0: hard threshold, 1: soft threshold)
+-- radius: bloom radius (resolution-independent)
+-- intensity: bloom intensity (0 to disable bloom)
+-- safe_clamp: (optional) safe color extraction (default: 1e20)
+Scene:setBloom(threshold, knee, radius, intensity, safe_clamp)
+
+-- Set material/translucent textures color profiles.
+-- Scene default is "sRGB" for albedo and "linear" for MR.
+-- Normal, depth and emission maps must be linear (color wise).
+--
+-- albedo, MR: color space string ("sRGB" or "linear")
+Scene:setMaterialColorProfiles(albedo, MR)
+
+-- Set FXAA parameters.
+-- contrast_threshold: (scene default: 0.0312)
+--- Trims the algorithm from processing darks.
+---   0.0833 - upper limit (default, the start of visible unfiltered edges)
+---   0.0625 - high quality (faster)
+---   0.0312 - visible limit (slower)
+--
+-- relative_threshold: (scene default: 0.125)
+--- The minimum amount of local contrast required to apply algorithm.
+---   0.333 - too little (faster)
+---   0.250 - low quality
+---   0.166 - default
+---   0.125 - high quality
+---   0.063 - overkill (slower)
+--
+-- subpixel_blending: (scene default: 0.75)
+--- Choose the amount of sub-pixel aliasing removal.
+--- This can effect sharpness.
+---   1.00 - upper limit (softer)
+---   0.75 - default amount of filtering
+---   0.50 - lower limit (sharper, less sub-pixel aliasing removal)
+---   0.25 - almost off
+---   0.00 - completely off
+Scene:setFXAA(contrast_threshold, relative_threshold, subpixel_blending)
+
+-- Set anti-aliasing mode.
+-- mode: string
+--- "none": disabled (scene default)
+--- "FXAA": FXAA 3.11
+Scene:setAntiAliasing(mode)
+
+-- Bind canvases and shader.
+--
+-- The material pass is the process of writing the albedo/shape (RGBA), normal,
+-- metalness/roughness and depth of each object of the scene to the G-buffer.
+--
+-- The albedo texture is to be used with LÖVE draw calls, it defines the albedo
+-- and shape (alpha) of the material/object (affected by LÖVE color).
+--
+-- If the API is too limited, it is better to write a custom material shader and
+-- directly call the LÖVE API (ex: ray-marching SDF, different kind of
+-- textures, etc.).
+Scene:bindMaterialPass()
+
+-- Bind normal map.
+-- The normal map must be in view space (X left->right, Y bottom->top, Z far->view).
+--
+-- normal_map: 3-components texture (RGBA8 format recommended)
+Scene:bindMaterialN(normal_map)
+
+-- Bind metalness/roughness map.
+-- MR_map: 2-components texture (metalness + roughness, RG8 format recommended)
+-- metalness: (optional) metalness factor (default: 1)
+-- roughness: (optional) roughness factor (default: 1)
+Scene:bindMaterialMR(MR_map, metalness, roughness)
+
+-- Bind depth/emission map.
+--
+-- In orthographic mode, the depth map is the perpendicular distance to the
+-- view plane (not near plane) for each pixel, it can be absolute or normalized (0-1).
+-- If normalized, it must be done with this formula: log2(z+1)/log2(max+1).
+-- In custom mode, the depth map is written as-is, z and depth_max are not
+-- used.
+--
+-- DE_map: 2-component texture (depth + emission, RG32F format recommended, absolute or normalized)
+-- z: (optional) depth of the object (should be positive, default: 0)
+-- depth_max: (optional) max distance in the logarithmically normalized depth map (default: 0)
+-- emission_factor: (optional) factor for the emission intensity (default: 1)
+-- emission_max: (optional) max value in the logarithmically normalized emission map (default: 0)
+Scene:bindMaterialDE(DE_map, z, depth_max, emission_factor, emission_max)
+
+-- Bind canvases and shader.
+-- The light pass is the process of lighting the materials.
+Scene:bindLightPass()
+
+-- (uses LÖVE color)
+Scene:drawAmbientLight(intensity)
+
+-- (uses LÖVE color)
+Scene:drawPointLight(x, y, z, radius, intensity)
+
+-- (uses LÖVE color)
+Scene:drawDirectionalLight(dx, dy, dz, intensity)
+
+-- Draw emission light pass (uses LÖVE color).
+-- intensity: (optional) (default: 1)
+Scene:drawEmissionLight(intensity)
+
+-- Bind raw light.
+-- Used to add raw light on the light buffer with draw calls.
+Scene:bindLight(intensity)
+
+-- Bind canvases and shader.
+-- The translucent pass is like the material pass, but only the albedo and
+-- emission will be used and the depth will not be modified (not a "solid"
+-- pass, after the light pass).
+Scene:bindTranslucentPass()
+
+-- Same as bindMaterialDE.
+Scene:bindTranslucentDE(DE_map, z, depth_max, emission_factor, emission_max)
+
+-- Final rendering.
+-- r,g,b,a: (optional) background color for the render (default: transparent)
+Scene:render(r, g, b, a)
+----
+
+== References
+
+=== PBR
+
+The implemented PBR is mostly based on the PBR tutorials from https://learnopengl.com/[learnopengl] and this https://blog.selfshadow.com/publications/s2013-shading-course/karis/s2013_pbs_epic_notes_v2.pdf[paper] from Epic Games.
+
+The filmic tone mapping operator comes from John Hable's http://filmicworlds.com/blog/filmic-tonemapping-operators/[post].
+
+=== Bloom
+
+The implemented bloom is based on the technique explained https://catlikecoding.com/unity/tutorials/advanced-rendering/bloom/[here] and take inspirations from https://github.com/keijiro/KinoBloom[KinoBloom] and https://www.blender.org/[Blender EEVEE] implementations.
+
+.Rough explanation
+- Bright areas are extracted from the render.
+- The result is downsampled successively N times with a 2x2 blur filter, effectively applying a 4x4 blur filter (texture bilinear filtering).
+- The result is then upsampled successively N times the same way and accumulated to each previous downsampled buffer until finally added to the render.
+
+=== FXAA
+
+The implementation is based on this https://catlikecoding.com/unity/tutorials/advanced-rendering/fxaa/[tutorial] about FXAA 3.11.
