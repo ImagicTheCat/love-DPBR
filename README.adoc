@@ -1,0 +1,16 @@
+= love-DPBR
+ifdef::env-github[]
+:tip-caption: :bulb:
+:note-caption: :information_source:
+:important-caption: :heavy_exclamation_mark:
+:caution-caption: :fire:
+:warning-caption: :warning:
+endif::[]
+:toc: left
+:toclevels: 5
+
+`love-DPBR` is a **D**eferred **P**hysically **B**ased **R**endering LÖVE library.
+
+It aims to be a simple and versatile tool to render 2D/3D-ish elements with PBR.
+
+TIP: It may be used to add dynamic lighting to (for example) 2D, pseudo-isometric or Point&Click (in a 3D still space) games.
