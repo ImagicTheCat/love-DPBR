@@ -907,6 +907,7 @@ function Scene:render(r, g, b, a)
 
     --- bloom extract pass
     love.graphics.setCanvas(self.g_light) -- re-use g_light
+    love.graphics.clear()
     love.graphics.setShader(self.bloom_extract_shader)
     love.graphics.draw(self.g_render)
 
@@ -917,6 +918,7 @@ function Scene:render(r, g, b, a)
       for i=1,self.bloom_iterations do
         local buffer = self.bloom_buffers[i]
         love.graphics.setCanvas(buffer)
+        love.graphics.clear()
         self.bloom_downsample_shader:send("texel_size", {1/previous:getWidth(), 1/previous:getHeight()})
         love.graphics.draw(previous, 0, 0, 0, buffer:getWidth()/previous:getWidth(), buffer:getHeight()/previous:getHeight())
         previous = buffer
