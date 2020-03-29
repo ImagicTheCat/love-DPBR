@@ -24,6 +24,10 @@ NOTE: This library is at the frontier between 2D and 3D, so the workflow can be 
 
 See link:examples[] (copy the library and launch the directory with LÖVE).
 
+[link=https://www.youtube.com/watch?v=SpACS-HFUb8]
+.Examples video
+image::https://img.youtube.com/vi/SpACS-HFUb8/0.jpg[]
+
 == Install
 
 See link:src[].
