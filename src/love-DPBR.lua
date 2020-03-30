@@ -51,6 +51,10 @@ mat3 getFragmentTBN()
 
 void effect()
 {
+  // compute transformed normal
+  vec4 n_color = Texel(m_normal, VaryingTexCoord.xy);
+  vec3 n = getFragmentTBN()*(n_color.xyz*2.0-1.0); // compute derivatives before discard
+
   vec4 albedo = Texel(MainTex, VaryingTexCoord.xy)*VaryingColor;
   if(albedo.a == 0) discard; // discard transparent albedo
   if(m_color_profiles[0] == 1) // sRGB, transform to linear
@@ -71,10 +75,6 @@ void effect()
   }
   else // custom mode
     gl_FragDepth = DE.x;
-
-  // compute transformed normal
-  vec4 n_color = Texel(m_normal, VaryingTexCoord.xy);
-  vec3 n = getFragmentTBN()*(n_color.xyz*2.0-1.0);
 
   love_Canvases[0] = albedo;
   love_Canvases[1] = vec4(n*0.5+0.5, albedo.a); // normal
@@ -763,6 +763,7 @@ function Scene:bindMaterialPass()
 
   love.graphics.setShader(self.material_shader)
   love.graphics.setDepthMode("lequal", true)
+  love.graphics.setBlendMode("alpha")
 end
 
 -- Bind normal map.
