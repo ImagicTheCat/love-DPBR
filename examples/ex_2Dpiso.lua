@@ -3,7 +3,8 @@ local DPBR = require("love-DPBR")
 local base = 128 -- x diagonal of base tile in pixels
 local unit = base/math.sqrt(2) -- pixels per meter
 local sw, sh = 1280/unit, 720/unit
-local scene = DPBR.newScene(1280, 720, 100, sw, sh)
+local scene = DPBR.newScene(1280, 720)
+scene:setProjection2D(100, "log", sw, sh)
 scene:setToneMapping("filmic")
 scene:setAntiAliasing("FXAA")
 scene:setBloom(0.8,0.5,6.5,0.05)
@@ -100,7 +101,7 @@ local function draw()
     love.graphics.setColor(r,g,b)
     scene:bindMaterialN(tile.normal)
     scene:bindMaterialMR(t_MR, metalness, roughness)
-    scene:bindMaterialDE(tile.DE, z+depth_bias, nil, 0)
+    scene:bindMaterialDE(tile.DE, z+depth_bias, 0)
     love.graphics.draw(tile.albedo, quads[dir], scene.w/2-base/2+x, scene.h-y-tile.albedo:getHeight())
   end
 
@@ -111,7 +112,7 @@ local function draw()
 
   scene:bindMaterialN(cursor_tile.normal)
   scene:bindMaterialMR(t_MR, 0, 0)
-  scene:bindMaterialDE(cursor_tile.DE, cz+depth_bias, nil, 15)
+  scene:bindMaterialDE(cursor_tile.DE, cz+depth_bias, 15)
   love.graphics.draw(cursor_tile.albedo, quads[1], scene.w/2-base/2+cx, scene.h-cy-cursor_tile.albedo:getHeight())
   love.graphics.setColor(1,1,1)
 

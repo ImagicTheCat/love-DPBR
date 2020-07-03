@@ -1,5 +1,5 @@
 -- https://github.com/ImagicTheCat/love-DPBR
--- MIT license (see LICENSE or love-DPBR.lua)
+-- MIT license (see LICENSE or src/love-DPBR.lua)
 
 --[[
 MIT License
@@ -25,21 +25,38 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ]]
 
+-- SHADERS
+
 local MATERIAL_SHADER = [[
 #pragma language glsl3
 
 uniform float scene_depth;
+uniform int scene_depth_mode;
+uniform float m_depth_max;
+uniform int m_depth_mode;
+uniform float m_emission_max;
+uniform int m_emission_mode;
+
 uniform Image MainTex;
 uniform Image m_normal;
 uniform Image m_MR;
 uniform Image m_DE;
-uniform float[2] m_depth_args; // (z, depth_max)
-uniform float[2] m_emission_args; // factor, emission_max
 uniform float[2] m_MR_args; // metalness and roughness factors
+uniform float[2] m_DE_args; // depth and emission factor
 uniform int[2] m_color_profiles; // (albedo, MR) (0: linear, 1: sRGB)
 
-float normalizeLog(float v, float max){ return log2(v+1.0)/log2(max+1.0); }
-float denormalizeLog(float v, float max){ return pow(max, v)-1.0; }
+float normalizeV(float v, float max, int mode)
+{
+  if(mode == 1) return v/max; // linear
+  else if(mode == 2) return log2(v+1.0)/log2(max+1.0); // log
+  else return v; // raw
+}
+float denormalizeV(float v, float max, int mode)
+{
+  if(mode == 1) return v*max; // linear
+  else if(mode == 2) return pow(max, v)-1.0; // log
+  else return v; // raw
+}
 
 mat3 getFragmentTBN()
 {
@@ -66,82 +83,24 @@ void effect()
   MR.rg *= vec2(m_MR_args[0], m_MR_args[1]); // factors
 
   vec4 DE = Texel(m_DE, VaryingTexCoord.xy); // depth + emission
-
-  if(scene_depth > 0){ // orthographic mode
-    if(m_depth_args[1] > 0) // denormalize depth
-      gl_FragDepth = normalizeLog(denormalizeLog(DE.x, m_depth_args[1])+m_depth_args[0], scene_depth);
-    else
-      gl_FragDepth = normalizeLog(DE.x+m_depth_args[0], scene_depth);
-  }
-  else // custom mode
-    gl_FragDepth = DE.x;
+  float depth = denormalizeV(DE.x, m_depth_max, m_depth_mode)+m_DE_args[0];
+  gl_FragDepth = normalizeV(depth, scene_depth, scene_depth_mode);
 
   love_Canvases[0] = albedo;
   love_Canvases[1] = vec4(n*0.5+0.5, albedo.a); // normal
   love_Canvases[2] = vec4(MR.rgb, albedo.a);
-
-  if(m_emission_args[1] > 0) // normalized emission
-    love_Canvases[3] = vec4(vec3(m_emission_args[0]*denormalizeLog(DE.y, m_emission_args[1])), albedo.a);
-  else
-    love_Canvases[3] = vec4(vec3(m_emission_args[0]*DE.y), albedo.a);
+  love_Canvases[3] = vec4(vec3(m_DE_args[1]*denormalizeV(DE.y, m_emission_max, m_emission_mode)), albedo.a);
 }
 ]]
-
-local TRANSLUCENT_SHADER = [[
-#pragma language glsl3
-
-uniform float scene_depth;
-uniform Image MainTex;
-uniform Image m_DE;
-uniform float[2] m_depth_args; // (z, depth_max)
-uniform float[2] m_emission_args; // factor, emission_max
-uniform int[2] m_color_profiles; // (albedo, MR) (0: linear, 1: sRGB)
-
-float normalizeLog(float v, float max){ return log2(v+1.0)/log2(max+1.0); }
-float denormalizeLog(float v, float max){ return pow(max, v)-1.0; }
-
-void effect()
-{
-  vec4 albedo = Texel(MainTex, VaryingTexCoord.xy)*VaryingColor;
-  if(albedo.a == 0) discard; // discard transparent albedo
-  if(m_color_profiles[0] == 1) // sRGB, transform to linear
-    albedo.rgb = pow(albedo.rgb, vec3(2.2));
-
-  vec4 DE = Texel(m_DE, VaryingTexCoord.xy); // depth + emission
-
-  if(scene_depth > 0){ // orthographic mode
-    if(m_depth_args[1] > 0) // denormalize depth
-      gl_FragDepth = normalizeLog(denormalizeLog(DE.x, m_depth_args[1])+m_depth_args[0], scene_depth);
-    else
-      gl_FragDepth = normalizeLog(DE.x+m_depth_args[0], scene_depth);
-  }
-  else // custom mode
-    gl_FragDepth = DE.x;
-
-  love_Canvases[0] = albedo;
-
-  if(m_emission_args[1] > 0) // normalized emission
-    love_Canvases[1] = vec4(vec3(m_emission_args[0]*denormalizeLog(DE.y, m_emission_args[1])), albedo.a);
-  else
-    love_Canvases[1] = vec4(vec3(m_emission_args[0]*DE.y), albedo.a);
-}
-]]
-
-
-local LIGHTS = {
-  AMBIENT = 0,
-  POINT = 1,
-  DIRECTIONAL = 2,
-  EMISSION = 3,
-  RAW = 4
-}
 
 local LIGHT_SHADER = [[
 #pragma language glsl3
 #define PI 3.1415926535897932384626433832795
 
 uniform float scene_depth;
-uniform mat4 projection_matrix;
+uniform int scene_depth_mode;
+uniform mat4 invp_matrix;
+
 uniform Image MainTex; // albedo
 uniform Image g_depth;
 uniform Image g_normal;
@@ -152,21 +111,25 @@ uniform float l_intensity;
 uniform vec4 l_pos_rad; // light position (view) and radius
 uniform vec3 l_dir;
 
-float denormalizeLog(float v, float max){ return pow(max, v)-1.0; }
+float denormalizeV(float v, float max, int mode)
+{
+  if(mode == 1) return v*max; // linear
+  else if(mode == 2) return pow(max, v)-1.0; // log
+  else return v; // raw
+}
 
 // compute fragment's position, normal and view vector (fragment->view) in view space
 void getFragmentPNV(out vec3 p, out vec3 n, out vec3 v)
 {
-  mat4 invp = inverse(projection_matrix);
-
   // position
   vec3 ndc = vec3(love_PixelCoord/love_ScreenSize.xy, 1.0);
   ndc.y = 1.0-ndc.y;
   ndc.z = Texel(g_depth, VaryingTexCoord.xy).x;
-  if(scene_depth > 0) ndc.z = denormalizeLog(ndc.z, scene_depth)/scene_depth; // orthographic mode
+  if(scene_depth_mode != 0) // not raw
+    ndc.z = denormalizeV(ndc.z, scene_depth, scene_depth_mode)/scene_depth;
   ndc = ndc*2.0-vec3(1.0);
 
-  vec4 p4 = invp*vec4(ndc, 1.0);
+  vec4 p4 = invp_matrix*vec4(ndc, 1.0);
   p4.z = -p4.z;
   p = vec3(p4/p4.w);
 
@@ -174,7 +137,7 @@ void getFragmentPNV(out vec3 p, out vec3 n, out vec3 v)
   n = normalize(Texel(g_normal, VaryingTexCoord.xy).xyz*2.0-vec3(1.0))*vec3(1.0,-1.0,-1.0);
 
   // view
-  vec4 vp = invp*vec4(ndc.xy, -1.0, 1.0);
+  vec4 vp = invp_matrix*vec4(ndc.xy, -1.0, 1.0);
   vp.z = -vp.z;
   vp /= vp.w;
   v = normalize(vec3(vp)-p);
@@ -283,12 +246,6 @@ void effect()
     love_Canvases[0] = vec4(VaryingColor.rgb*Texel(MainTex, VaryingTexCoord.xy).rgb*l_intensity, 1.0);
 }
 ]]
-
-local TMO = {
-  raw = 0,
-  reinhard = 1,
-  filmic = 2 -- Jim Hejl, Richard Burgess-Dawson
-}
 
 local BLOOM_EXTRACT_SHADER = [[
 #pragma language glsl3
@@ -529,6 +486,30 @@ vec4 effect(vec4 vcolor, Image tex, vec2 uv, vec2 screen_coords)
 }
 ]]
 
+-- ENUMS
+
+local LIGHTS = {
+  AMBIENT = 0,
+  POINT = 1,
+  DIRECTIONAL = 2,
+  EMISSION = 3,
+  RAW = 4
+}
+
+local TMO = {
+  raw = 0,
+  reinhard = 1,
+  filmic = 2 -- Jim Hejl, Richard Burgess-Dawson
+}
+
+local NORM_MODES = { -- Normalization modes.
+  raw = 0, -- z' = z
+  linear = 1, -- z' = z/max
+  log = 2 -- z' = log2(z+1)/log2(max+1)
+}
+
+-- DPBR
+
 local DPBR = {}
 
 local Scene = {}
@@ -537,39 +518,30 @@ local Scene_meta = {__index = Scene}
 -- Create a scene.
 --
 -- A scene defines a 2D-3D space (view space), parameters and data to properly
--- render each material/object.
---
--- There are two modes for a scene: orthographic or custom.
--- The orthographic mode allows for any kind of 2D rendering, with the
--- possibility to adjust the depth of each element and perform meaningful
--- transformations. The depth is positive, view->far. Correct scene dimensions
--- are important to keep consistency for light computation (distance, etc.).
--- The custom mode allows the use of a specific projection matrix, but reduces
--- the API possibilities.
---
--- API requiring a position (like a point light) are in view space (defined by the projection).
+-- render each material/object. Functions requiring 3D coordinates (like a
+-- point light) are in view space (defined by the projection).
+-- The default projection is 2D/orthographic, with a depth of 10 and "log"
+-- normalization.
 --
 -- w,h: render dimensions
--- depth_projection: max depth of the scene or custom projection matrix
---- max depth: orthographic mode, maximum depth distance of the scene (> 0)
---- projection matrix: custom mode, LÖVE table format (row-major)
--- sw, sh: (optional) scene dimensions for orthographic mode (default: w, h)
+-- settings: (optional) map of settings
+--- half_float: flag, use "16f" instead of "32f" for floating-point textures
 -- return Scene
-function DPBR.newScene(w, h, depth_projection, sw, sh)
+function DPBR.newScene(w, h, settings)
+  settings = settings or {}
   local scene = setmetatable({}, Scene_meta)
-
   scene.w, scene.h = w, h
-  scene:setProjection(depth_projection, sw, sh)
 
+  local float_type = settings.half_float and "16f" or "32f"
   -- init buffers
   scene.g_albedo = love.graphics.newCanvas(w, h, {format = "rgba8"})
   scene.g_normal = love.graphics.newCanvas(w, h, {format = "rgba8"})
   scene.g_MR = love.graphics.newCanvas(w, h, {format = "rg8"}) -- metalness + roughness
-  scene.g_emission = love.graphics.newCanvas(w, h, {format = "r32f"})
+  scene.g_emission = love.graphics.newCanvas(w, h, {format = "r"..float_type})
   scene.g_depth = love.graphics.newCanvas(w, h, {format = "depth24", readable = true})
-  scene.g_light = love.graphics.newCanvas(w, h, {format = "rgba32f"})
+  scene.g_light = love.graphics.newCanvas(w, h, {format = "rgba"..float_type})
   scene.g_light:setFilter("linear", "linear") -- for AA
-  scene.g_render = love.graphics.newCanvas(w, h, {format = "rgba32f"})
+  scene.g_render = love.graphics.newCanvas(w, h, {format = "rgba"..float_type})
   scene.g_render:setFilter("linear", "linear") -- for downsampling
   scene.g_luma = love.graphics.newCanvas(w, h, {format = "r8"})
 
@@ -582,7 +554,7 @@ function DPBR.newScene(w, h, depth_projection, sw, sh)
     local bw, bh = w, h
     for i=1, max_iterations do
       bw, bh = math.floor(bw/2), math.floor(bh/2)
-      local buffer = love.graphics.newCanvas(bw, bh, {format = "rgba32f"})
+      local buffer = love.graphics.newCanvas(bw, bh, {format = "rgba"..float_type})
       buffer:setFilter("linear", "linear")
       table.insert(scene.bloom_buffers, buffer)
     end
@@ -590,7 +562,6 @@ function DPBR.newScene(w, h, depth_projection, sw, sh)
 
   -- init shaders
   scene.material_shader = love.graphics.newShader(MATERIAL_SHADER)
-  scene.translucent_shader = love.graphics.newShader(TRANSLUCENT_SHADER)
   scene.light_shader = love.graphics.newShader(LIGHT_SHADER)
   scene.render_shader = love.graphics.newShader(RENDER_SHADER)
   scene.bloom_extract_shader = love.graphics.newShader(BLOOM_EXTRACT_SHADER)
@@ -598,14 +569,9 @@ function DPBR.newScene(w, h, depth_projection, sw, sh)
   scene.bloom_upsample_shader = love.graphics.newShader(BLOOM_UPSAMPLE_SHADER)
   scene.fxaa_shader = love.graphics.newShader(FXAA_SHADER)
 
-  scene:setMaterialColorProfiles("sRGB", "linear")
   scene.render_shader:send("gamma", 2.2)
   scene.render_shader:send("exposure", 1)
   scene.render_shader:send("TMO", 0)
-  scene.material_shader:send("scene_depth", scene.depth)
-  scene.translucent_shader:send("scene_depth", scene.depth)
-  scene.light_shader:send("projection_matrix", scene.projection_matrix)
-  scene.light_shader:send("scene_depth", scene.depth)
   scene.light_shader:send("g_depth", scene.g_depth)
   scene.light_shader:send("g_normal", scene.g_normal)
   scene.light_shader:send("g_MR", scene.g_MR)
@@ -615,35 +581,64 @@ function DPBR.newScene(w, h, depth_projection, sw, sh)
   scene.fxaa_shader:send("g_luma", scene.g_luma)
 
   scene:setBloom(0.8, 0.5, 6.5, 0.1)
-
   scene:setFXAA(0.0312, 0.125, 0.75)
-  scene.AA_mode = "none"
+  scene:setAntiAliasing("none")
+  scene:setMaterialColorProfiles("sRGB", "linear")
+  scene:setMaterialDepth("raw")
+  scene:setMaterialEmissionMax("raw")
+  scene:setProjection2D(10) -- default matrices
 
   return scene
 end
 
 -- Scene
 
--- Set projection.
--- depth_projection: max depth of the scene or custom projection matrix
---- max depth: orthographic mode, maximum depth distance of the scene (> 0)
---- projection matrix: custom mode, LÖVE table format (row-major)
--- sw, sh: (optional) scene dimensions for orthographic mode (default: w, h)
-function Scene:setProjection(depth_projection, sw, sh)
-  sw, sh = sw or self.w, sh or self.h
+-- Define how the scene depth is interpreted.
+-- mode: string, normalization mode
+--- "raw": z' = z
+--- "linear": z' = z/max
+--- "log": z' = log2(z+1)/log2(max+1)
+-- depth: (optional) max depth (default: 1)
+function Scene:setDepth(mode, depth)
+  self.depth_mode, self.depth = mode, depth or 1
+  local imode = NORM_MODES[mode] or 0
+  self.material_shader:send("scene_depth", self.depth)
+  self.material_shader:send("scene_depth_mode", imode)
+  self.light_shader:send("scene_depth", self.depth)
+  self.light_shader:send("scene_depth_mode", imode)
+end
 
-  if type(depth_projection) == "number" then
-    self.depth = depth_projection
-    self.projection_matrix = {
-      2/sw, 0, 0, -1,
-      0, -2/sh, 0, 1,
-      0, 0, -2/self.depth, -1,
-      0, 0, 0, 1
-    }
-  else
-    self.projection_matrix = depth_projection
-    self.depth = 0
-  end
+-- Set projection and inverse projection matrices.
+-- matrix format: mat4x4, columns are vectors, list of values in row-major order
+function Scene:setProjection(projection, inv_projection)
+  self.projection, self.inv_projection = projection, inv_projection
+  self.light_shader:send("invp_matrix", self.inv_projection)
+end
+
+-- Set orthographic projection (top-left origin).
+-- Allows for any kind of 2D rendering, with the possibility to adjust the
+-- depth of each element and perform meaningful transformations. The depth is
+-- positive, view->far. Correct scene dimensions are important to keep
+-- consistency for light computation (distance, etc.).
+--
+-- depth: scene depth
+-- mode: (optional) scene depth mode (default: "log", see Scene:setDepth)
+-- sw, sh: (optional) scene view dimensions (default: w, h)
+function Scene:setProjection2D(depth, mode, sw, sh)
+  sw, sh = sw or self.w, sh or self.h
+  mode = mode or "log"
+  self:setProjection({
+    2/sw, 0, 0, -1,
+    0, -2/sh, 0, 1,
+    0, 0, -2/depth, -1,
+    0, 0, 0, 1
+  }, {
+    sw/2, 0, 0, sw/2,
+    0, -sh/2, 0, sh/2,
+    0, 0, -depth/2, -depth/2,
+    0, 0, 0, 1
+  })
+  self:setDepth(mode, depth)
 end
 
 -- Set gamma used for correction.
@@ -693,14 +688,37 @@ function Scene:setBloom(threshold, knee, radius, intensity, safe_clamp)
   self.bloom_upsample_shader:send("sample_scale", 0.5+l-math.floor(l))
 end
 
--- Set material/translucent textures color profiles.
+-- Set material textures color profiles.
 -- Scene default is "sRGB" for albedo and "linear" for MR.
 -- Normal, depth and emission maps must be linear (color wise).
 --
 -- albedo, MR: color space string ("sRGB" or "linear")
 function Scene:setMaterialColorProfiles(albedo, MR)
   self.material_shader:send("m_color_profiles", albedo == "sRGB" and 1 or 0, MR == "sRGB" and 1 or 0)
-  self.translucent_shader:send("m_color_profiles", albedo == "sRGB" and 1 or 0, MR == "sRGB" and 1 or 0)
+end
+
+-- Define how the material depth is interpreted.
+-- Scene default: "raw".
+--
+-- mode: normalization mode (see Scene:setDepth)
+-- depth: (optional) max depth (default: 1)
+function Scene:setMaterialDepth(mode, depth)
+  self.material_depth_mode, self.material_depth = mode, depth or 1
+  local imode = NORM_MODES[mode] or 0
+  self.material_shader:send("m_depth_max", self.material_depth)
+  self.material_shader:send("m_depth_mode", imode)
+end
+
+-- Define how the material emission is interpreted.
+-- Scene default: "raw".
+--
+-- mode: normalization mode (see Scene:setDepth)
+-- max: (optional) max emission (default: 1)
+function Scene:setMaterialEmissionMax(mode, max)
+  self.material_emission_mode, self.material_emission_max = mode, max or 1
+  local imode = NORM_MODES[mode] or 0
+  self.material_shader:send("m_emission_max", self.material_emission_max)
+  self.material_shader:send("m_emission_mode", imode)
 end
 
 -- Set FXAA parameters.
@@ -760,7 +778,6 @@ function Scene:bindMaterialPass()
     depthstencil = self.g_depth
   })
   love.graphics.clear()
-
   love.graphics.setShader(self.material_shader)
   love.graphics.setDepthMode("lequal", true)
   love.graphics.setBlendMode("alpha")
@@ -786,22 +803,13 @@ end
 
 -- Bind depth/emission map.
 --
--- In orthographic mode, the depth map is the perpendicular distance to the
--- view plane (not near plane) for each pixel, it can be absolute or normalized (0-1).
--- If normalized, it must be done with this formula: log2(z+1)/log2(max+1).
--- In custom mode, the depth map is written as-is, z and depth_max are not
--- used.
---
--- DE_map: 2-component texture (depth + emission, RG32F format recommended, absolute or normalized)
--- z: (optional) depth of the object (should be positive, default: 0)
--- depth_max: (optional) max distance in the logarithmically normalized depth map (default: 0)
--- emission_factor: (optional) factor for the emission intensity (default: 1)
--- emission_max: (optional) max value in the logarithmically normalized emission map (default: 0)
-function Scene:bindMaterialDE(DE_map, z, depth_max, emission_factor, emission_max)
+-- DE_map: 2-component texture (depth + emission, RG16/32F format recommended)
+-- z: (optional) added depth (default: 0)
+-- emission_factor: (optional) emission intensity factor (default: 1)
+function Scene:bindMaterialDE(DE_map, z, emission_factor)
   local s = self.material_shader
   s:send("m_DE", DE_map)
-  s:send("m_depth_args", z or 0, depth_max or 0)
-  s:send("m_emission_args", emission_factor or 1, emission_max or 0)
+  s:send("m_DE_args", z or 0, emission_factor or 1)
 end
 
 -- Bind canvases and shader.
@@ -858,30 +866,6 @@ end
 function Scene:bindLight(intensity)
   self.light_shader:send("l_typ", LIGHTS.RAW)
   self.light_shader:send("l_intensity", intensity)
-end
-
--- Bind canvases and shader.
--- The translucent pass is like the material pass, but only the albedo and
--- emission will be used and the depth will not be modified (not a "solid"
--- pass, after the light pass).
-function Scene:bindTranslucentPass()
-  love.graphics.setCanvas({
-    self.g_albedo,
-    self.g_emission,
-    depthstencil = self.g_depth
-  })
-
-  love.graphics.setShader(self.translucent_shader)
-  love.graphics.setBlendMode("alpha")
-  love.graphics.setDepthMode("lequal", true)
-end
-
--- Same as bindMaterialDE.
-function Scene:bindTranslucentDE(DE_map, z, depth_max, emission_factor, emission_max)
-  local s = self.translucent_shader
-  s:send("m_DE", DE_map)
-  s:send("m_depth_args", z or 0, depth_max or 0)
-  s:send("m_emission_args", emission_factor or 1, emission_max or 0)
 end
 
 -- Final rendering.

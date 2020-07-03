@@ -1,6 +1,7 @@
 local DPBR = require("love-DPBR")
 
-local scene = DPBR.newScene(1280,720,50,10,10*9/16)
+local scene = DPBR.newScene(1280,720)
+scene:setProjection2D(50, "log", 10, 10*9/16)
 scene:setToneMapping("filmic")
 scene:setAntiAliasing("FXAA")
 
