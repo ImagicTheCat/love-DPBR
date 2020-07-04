@@ -45,7 +45,7 @@ See link:src[].
 -- point light) are in view space (defined by the projection). The default
 -- projection is 2D/orthographic, with a depth of 10 and "log" normalization.
 -- All passes must be called, even if not used, in that order:
---   Material -> Light -> Background
+--   Material -> Light -> Background -> Blend => Render
 --
 -- If the API is too limited, it is better to write custom shaders and directly
 -- call the LÖVE API (ex: ray-marching SDF, different kind of textures, etc.)
@@ -63,6 +63,7 @@ M.newScene(w, h, settings)
 [source, lua]
 ----
 self.w, self.h -- dimensions
+self.pass -- current pass: "idle", "material", "light", "background", "blend"
 self.AA_mode -- string
 self.projection, self.inv_projection -- mat4x4, columns are vectors, list of values in row-major order
 self.depth_mode, self.depth -- scene depth and mode
@@ -177,12 +178,11 @@ Scene:setFXAA(contrast_threshold, relative_threshold, subpixel_blending)
 Scene:setAntiAliasing(mode)
 
 -- Bind canvases and shader.
---
 -- The material pass is the process of writing the albedo/shape (RGBA), normal,
--- metalness/roughness and depth of each object of the scene to the G-buffer.
+-- metalness/roughness and depth/emission of objects to the G-buffer.
 --
 -- The albedo texture is to be used with LÖVE draw calls, it defines the albedo
--- and shape (alpha) of the material/object (affected by LÖVE color).
+-- and shape (alpha, 0 discard pixels) of the object (affected by LÖVE color).
 Scene:bindMaterialPass()
 
 -- Bind normal map.
@@ -230,10 +230,21 @@ Scene:bindLight(intensity)
 -- before the final rendering. No operation is performed by default (no clear).
 Scene:bindBackgroundPass()
 
+-- Bind canvases and shader.
+-- The blend pass is similar to the material pass. It is the process of
+-- blending the color/shape (RGBA) of objects to the render buffer, using
+-- depth/emission data. It can be used to create various effects like lighting,
+-- darkening, transparency, etc.
+--
+-- The color texture is to be used with LÖVE draw calls, it defines the
+-- color/light and shape/opacity (alpha, 0 discard pixels) of the object
+-- (affected by LÖVE color and multiplied by emission).
+-- Material settings and Scene:bindMaterialDE are used.
+Scene:bindBlendPass()
+
 -- Final rendering (output normalized colors).
 -- target: (optional) target canvas (on screen otherwise)
--- sx, sy: (optional) scale factors (see love.graphics.draw)
-Scene:render(target, sx, sy)
+Scene:render(target)
 ----
 
 == References

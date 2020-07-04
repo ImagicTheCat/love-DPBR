@@ -78,6 +78,7 @@ local function draw()
 
   scene:bindBackgroundPass()
   love.graphics.clear(0,0,0,1)
+  scene:bindBlendPass()
   scene:render()
 end
 

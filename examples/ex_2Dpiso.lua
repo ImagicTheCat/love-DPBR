@@ -94,7 +94,6 @@ local function draw()
   local time = love.timer.getTime()
 
   scene:bindMaterialPass()
-
   -- draw map
   for _, mtile in ipairs(map) do
     local tile, dir, x, y, z, r, g, b, metalness, roughness = unpack(mtile)
@@ -105,25 +104,26 @@ local function draw()
     love.graphics.draw(tile.albedo, quads[dir], scene.w/2-base/2+x, scene.h-y-tile.albedo:getHeight())
   end
 
-  -- draw cursor
+  -- cursor
   local wx,wy,wz = pointerToWorld(mx-scene.w/2, scene.h-my, 1)
   local cx,cy,cz = worldToScreen(wx,wy,wz)
-  love.graphics.setColor(HSL(time/50%1, 1, 0.65))
-
-  scene:bindMaterialN(cursor_tile.normal)
-  scene:bindMaterialMR(t_MR, 0, 0)
-  scene:bindMaterialDE(cursor_tile.DE, cz+depth_bias, 15)
-  love.graphics.draw(cursor_tile.albedo, quads[1], scene.w/2-base/2+cx, scene.h-cy-cursor_tile.albedo:getHeight())
-  love.graphics.setColor(1,1,1)
 
   scene:bindLightPass()
   scene:drawEmissionLight()
-  love.graphics.setColor(HSL(time/50%1, 1, 0.65))
+  love.graphics.setColor(HSL(time/50%1, 1, 0.55))
   scene:drawPointLight((scene.w/2+cx)/unit,(scene.h-cy-base/2)/unit,cz,100,20)
   love.graphics.setColor(1,1,1)
 
   scene:bindBackgroundPass()
   love.graphics.clear(0,0,0,1)
+
+  scene:bindBlendPass()
+  -- draw cursor
+  love.graphics.setColor(HSL(time/50%1, 1, 0.55))
+  scene:bindMaterialDE(cursor_tile.DE, cz+depth_bias, 15)
+  love.graphics.draw(cursor_tile.albedo, quads[1], scene.w/2-base/2+cx, scene.h-cy-cursor_tile.albedo:getHeight())
+  love.graphics.setColor(1,1,1)
+
   scene:render()
 end
 

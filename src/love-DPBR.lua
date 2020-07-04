@@ -72,10 +72,11 @@ void effect()
   vec4 n_color = Texel(m_normal, VaryingTexCoord.xy);
   vec3 n = getFragmentTBN()*(n_color.xyz*2.0-1.0); // compute derivatives before discard
 
-  vec4 albedo = Texel(MainTex, VaryingTexCoord.xy)*VaryingColor;
+  vec4 albedo = Texel(MainTex, VaryingTexCoord.xy);
   if(albedo.a == 0) discard; // discard transparent albedo
   if(m_color_profiles[0] == 1) // sRGB, transform to linear
     albedo.rgb = pow(albedo.rgb, vec3(2.2));
+  albedo *= VaryingColor;
 
   vec4 MR = Texel(m_MR, VaryingTexCoord.xy);
   if(m_color_profiles[1] == 1) // sRGB, transform to linear
@@ -90,6 +91,51 @@ void effect()
   love_Canvases[1] = vec4(n*0.5+0.5, albedo.a); // normal
   love_Canvases[2] = vec4(MR.rgb, albedo.a);
   love_Canvases[3] = vec4(vec3(m_DE_args[1]*denormalizeV(DE.y, m_emission_max, m_emission_mode)), albedo.a);
+}
+]]
+
+local BLEND_SHADER = [[
+#pragma language glsl3
+
+uniform float scene_depth;
+uniform int scene_depth_mode;
+uniform float m_depth_max;
+uniform int m_depth_mode;
+uniform float m_emission_max;
+uniform int m_emission_mode;
+
+uniform Image MainTex;
+uniform Image m_DE;
+uniform float[2] m_DE_args; // depth and emission factor
+uniform int[2] m_color_profiles; // (albedo, MR) (0: linear, 1: sRGB)
+
+float normalizeV(float v, float max, int mode)
+{
+  if(mode == 1) return v/max; // linear
+  else if(mode == 2) return log2(v+1.0)/log2(max+1.0); // log
+  else return v; // raw
+}
+float denormalizeV(float v, float max, int mode)
+{
+  if(mode == 1) return v*max; // linear
+  else if(mode == 2) return pow(max, v)-1.0; // log
+  else return v; // raw
+}
+
+void effect()
+{
+  vec4 color = Texel(MainTex, VaryingTexCoord.xy);
+  if(color.a == 0) discard; // discard transparent color
+  if(m_color_profiles[0] == 1) // sRGB, transform to linear
+    color.rgb = pow(color.rgb, vec3(2.2));
+  color *= VaryingColor;
+
+  vec4 DE = Texel(m_DE, VaryingTexCoord.xy); // depth + emission
+  float depth = denormalizeV(DE.x, m_depth_max, m_depth_mode)+m_DE_args[0];
+  gl_FragDepth = normalizeV(depth, scene_depth, scene_depth_mode);
+  color.rgb *= denormalizeV(DE.y, m_emission_max, m_emission_mode)+m_DE_args[1];
+
+  love_Canvases[0] = color;
 }
 ]]
 
@@ -522,7 +568,7 @@ local Scene_meta = {__index = Scene}
 -- point light) are in view space (defined by the projection). The default
 -- projection is 2D/orthographic, with a depth of 10 and "log" normalization.
 -- All passes must be called, even if not used, in that order:
---   Material -> Light -> Background
+--   Material -> Light -> Background -> Blend => Render
 --
 -- If the API is too limited, it is better to write custom shaders and directly
 -- call the LÖVE API (ex: ray-marching SDF, different kind of textures, etc.)
@@ -530,12 +576,13 @@ local Scene_meta = {__index = Scene}
 --
 -- w,h: render dimensions
 -- settings: (optional) map of settings
---- half_float: flag, use "16f" instead of "32f" for floating-point textures
+--- half_float: flag, use "16f" instead of "32f" for floating-point buffers
 -- return Scene
 function DPBR.newScene(w, h, settings)
   settings = settings or {}
   local scene = setmetatable({}, Scene_meta)
   scene.w, scene.h = w, h
+  scene.pass = "idle"
 
   local float_type = settings.half_float and "16f" or "32f"
   -- init buffers
@@ -567,6 +614,7 @@ function DPBR.newScene(w, h, settings)
 
   -- init shaders
   scene.material_shader = love.graphics.newShader(MATERIAL_SHADER)
+  scene.blend_shader = love.graphics.newShader(BLEND_SHADER)
   scene.light_shader = love.graphics.newShader(LIGHT_SHADER)
   scene.render_shader = love.graphics.newShader(RENDER_SHADER)
   scene.bloom_extract_shader = love.graphics.newShader(BLOOM_EXTRACT_SHADER)
@@ -609,6 +657,8 @@ function Scene:setDepth(mode, depth)
   local imode = NORM_MODES[mode] or 0
   self.material_shader:send("scene_depth", self.depth)
   self.material_shader:send("scene_depth_mode", imode)
+  self.blend_shader:send("scene_depth", self.depth)
+  self.blend_shader:send("scene_depth_mode", imode)
   self.light_shader:send("scene_depth", self.depth)
   self.light_shader:send("scene_depth_mode", imode)
 end
@@ -694,12 +744,13 @@ function Scene:setBloom(threshold, knee, radius, intensity, safe_clamp)
 end
 
 -- Set material textures color profiles.
--- Scene default is "sRGB" for albedo and "linear" for MR.
+-- Scene default is "sRGB" for color/albedo and "linear" for MR.
 -- Normal, depth and emission maps must be linear (color wise).
 --
--- albedo, MR: color space string ("sRGB" or "linear")
-function Scene:setMaterialColorProfiles(albedo, MR)
-  self.material_shader:send("m_color_profiles", albedo == "sRGB" and 1 or 0, MR == "sRGB" and 1 or 0)
+-- color, MR: color space string ("sRGB" or "linear")
+function Scene:setMaterialColorProfiles(color, MR)
+  self.material_shader:send("m_color_profiles", color == "sRGB" and 1 or 0, MR == "sRGB" and 1 or 0)
+  self.blend_shader:send("m_color_profiles", color == "sRGB" and 1 or 0, MR == "sRGB" and 1 or 0)
 end
 
 -- Define how the material depth is interpreted.
@@ -712,6 +763,8 @@ function Scene:setMaterialDepth(mode, depth)
   local imode = NORM_MODES[mode] or 0
   self.material_shader:send("m_depth_max", self.material_depth)
   self.material_shader:send("m_depth_mode", imode)
+  self.blend_shader:send("m_depth_max", self.material_depth)
+  self.blend_shader:send("m_depth_mode", imode)
 end
 
 -- Define how the material emission is interpreted.
@@ -724,6 +777,8 @@ function Scene:setMaterialEmissionMax(mode, max)
   local imode = NORM_MODES[mode] or 0
   self.material_shader:send("m_emission_max", self.material_emission_max)
   self.material_shader:send("m_emission_mode", imode)
+  self.blend_shader:send("m_emission_max", self.material_emission_max)
+  self.blend_shader:send("m_emission_mode", imode)
 end
 
 -- Set FXAA parameters.
@@ -764,13 +819,13 @@ function Scene:setAntiAliasing(mode)
 end
 
 -- Bind canvases and shader.
---
 -- The material pass is the process of writing the albedo/shape (RGBA), normal,
--- metalness/roughness and depth of each object of the scene to the G-buffer.
+-- metalness/roughness and depth/emission of objects to the G-buffer.
 --
 -- The albedo texture is to be used with LÖVE draw calls, it defines the albedo
--- and shape (alpha) of the material/object (affected by LÖVE color).
+-- and shape (alpha, 0 discard pixels) of the object (affected by LÖVE color).
 function Scene:bindMaterialPass()
+  self.pass = "material"
   love.graphics.setCanvas({
     self.g_albedo,
     self.g_normal,
@@ -808,7 +863,7 @@ end
 -- z: (optional) added depth (default: 0)
 -- emission_factor: (optional) emission intensity factor (default: 1)
 function Scene:bindMaterialDE(DE_map, z, emission_factor)
-  local s = self.material_shader
+  local s = (self.pass == "blend" and self.blend_shader or self.material_shader)
   s:send("m_DE", DE_map)
   s:send("m_DE_args", z or 0, emission_factor or 1)
 end
@@ -816,6 +871,7 @@ end
 -- Bind light canvas and shader (additive HDR colors/floats).
 -- The light pass is the process of lighting the materials.
 function Scene:bindLightPass()
+  self.pass = "light"
   love.graphics.setDepthMode("always", false)
 
   -- alpha black pass
@@ -873,19 +929,39 @@ end
 -- This pass is used to fill the render background with HDR colors (floats)
 -- before the final rendering. No operation is performed by default (no clear).
 function Scene:bindBackgroundPass()
+  self.pass = "background"
   love.graphics.setBlendMode("alpha")
-  love.graphics.setDepthMode("always", false)
   love.graphics.setCanvas(self.g_render)
   love.graphics.setShader()
 end
 
--- Final rendering (output normalized colors).
--- target: (optional) target canvas (on screen otherwise)
--- sx, sy: (optional) scale factors (see love.graphics.draw)
-function Scene:render(target, sx, sy)
+-- Bind canvases and shader.
+-- The blend pass is similar to the material pass. It is the process of
+-- blending the color/shape (RGBA) of objects to the render buffer, using
+-- depth/emission data. It can be used to create various effects like lighting,
+-- darkening, transparency, etc.
+--
+-- The color texture is to be used with LÖVE draw calls, it defines the
+-- color/light and shape/opacity (alpha, 0 discard pixels) of the object
+-- (affected by LÖVE color and multiplied by emission).
+-- Material settings and Scene:bindMaterialDE are used.
+function Scene:bindBlendPass()
+  self.pass = "blend"
   -- draw light buffer to render buffer
   love.graphics.draw(self.g_light)
 
+  love.graphics.setDepthMode("lequal", false)
+  love.graphics.setCanvas({
+    self.g_render,
+    depthstencil = self.g_depth
+  })
+  love.graphics.setShader(self.blend_shader)
+end
+
+-- Final rendering (output normalized colors).
+-- target: (optional) target canvas (on screen otherwise)
+function Scene:render(target)
+  self.pass = "idle"
   if self.bloom_intensity > 0 then
     -- bloom effect
     -- Bright areas are extracted from the render. The result is downsampled with
@@ -952,12 +1028,12 @@ function Scene:render(target, sx, sy)
 
     love.graphics.setCanvas(target)
     love.graphics.setShader(self.fxaa_shader)
-    love.graphics.draw(ptarget, 0, 0, 0, sx, sy)
+    love.graphics.draw(ptarget)
     love.graphics.setShader()
   else -- no AA
     love.graphics.setCanvas(target)
     love.graphics.setShader(self.render_shader)
-    love.graphics.draw(psource, 0, 0, 0, sx, sy)
+    love.graphics.draw(psource)
     love.graphics.setShader()
   end
   if target then love.graphics.setCanvas() end

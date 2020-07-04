@@ -35,6 +35,7 @@ local function draw()
   love.graphics.setColor(1,1,1)
 
   scene:bindBackgroundPass()
+  scene:bindBlendPass()
   scene:render()
 end
 
