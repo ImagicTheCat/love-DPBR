@@ -34,7 +34,8 @@ local function draw()
   scene:drawPointLight(x/scene.w*10,y/scene.h*10*9/16,15,100,20)
   love.graphics.setColor(1,1,1)
 
-  scene:render(0,0,0,1)
+  scene:bindBackgroundPass()
+  scene:render()
 end
 
 return tick, draw, "3D baked scene.\n\nModel by Andrew Maximov.\n(http://artisaverb.info/PBT.html)"

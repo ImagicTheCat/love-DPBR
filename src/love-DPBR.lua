@@ -519,9 +519,14 @@ local Scene_meta = {__index = Scene}
 --
 -- A scene defines a 2D-3D space (view space), parameters and data to properly
 -- render each material/object. Functions requiring 3D coordinates (like a
--- point light) are in view space (defined by the projection).
--- The default projection is 2D/orthographic, with a depth of 10 and "log"
--- normalization.
+-- point light) are in view space (defined by the projection). The default
+-- projection is 2D/orthographic, with a depth of 10 and "log" normalization.
+-- All passes must be called, even if not used, in that order:
+--   Material -> Light -> Background
+--
+-- If the API is too limited, it is better to write custom shaders and directly
+-- call the LÖVE API (ex: ray-marching SDF, different kind of textures, etc.)
+-- and work around the library to fill the buffers.
 --
 -- w,h: render dimensions
 -- settings: (optional) map of settings
@@ -765,10 +770,6 @@ end
 --
 -- The albedo texture is to be used with LÖVE draw calls, it defines the albedo
 -- and shape (alpha) of the material/object (affected by LÖVE color).
---
--- If the API is too limited, it is better to write a custom material shader and
--- directly call the LÖVE API (ex: ray-marching SDF, different kind of
--- textures, etc.).
 function Scene:bindMaterialPass()
   love.graphics.setCanvas({
     self.g_albedo,
@@ -812,7 +813,7 @@ function Scene:bindMaterialDE(DE_map, z, emission_factor)
   s:send("m_DE_args", z or 0, emission_factor or 1)
 end
 
--- Bind canvases and shader.
+-- Bind light canvas and shader (additive HDR colors/floats).
 -- The light pass is the process of lighting the materials.
 function Scene:bindLightPass()
   love.graphics.setDepthMode("always", false)
@@ -868,18 +869,21 @@ function Scene:bindLight(intensity)
   self.light_shader:send("l_intensity", intensity)
 end
 
--- Final rendering.
--- r,g,b,a: (optional) background color for the render (default: transparent)
-function Scene:render(r, g, b, a)
-  if not r then r,g,b,a = 0,0,0,0 end
-
+-- Bind render canvas.
+-- This pass is used to fill the render background with HDR colors (floats)
+-- before the final rendering. No operation is performed by default (no clear).
+function Scene:bindBackgroundPass()
   love.graphics.setBlendMode("alpha")
   love.graphics.setDepthMode("always", false)
-
-  -- draw light buffer to render buffer with background color
   love.graphics.setCanvas(self.g_render)
   love.graphics.setShader()
-  love.graphics.clear(r,g,b,a)
+end
+
+-- Final rendering (output normalized colors).
+-- target: (optional) target canvas (on screen otherwise)
+-- sx, sy: (optional) scale factors (see love.graphics.draw)
+function Scene:render(target, sx, sy)
+  -- draw light buffer to render buffer
   love.graphics.draw(self.g_light)
 
   if self.bloom_intensity > 0 then
@@ -936,27 +940,27 @@ function Scene:render(r, g, b, a)
   end
 
   love.graphics.setBlendMode("alpha")
-
   -- Anti-aliasing pass
-  local target = self.bloom_intensity > 0 and self.g_light or self.g_render
-  local source = self.bloom_intensity > 0 and self.g_render or self.g_light
+  local ptarget = self.bloom_intensity > 0 and self.g_light or self.g_render
+  local psource = self.bloom_intensity > 0 and self.g_render or self.g_light
 
   if self.AA_mode == "FXAA" then
-    love.graphics.setCanvas(target, self.g_luma)
+    love.graphics.setCanvas(ptarget, self.g_luma)
     love.graphics.clear()
     love.graphics.setShader(self.render_shader)
-    love.graphics.draw(source)
+    love.graphics.draw(psource)
 
-    love.graphics.setCanvas()
+    love.graphics.setCanvas(target)
     love.graphics.setShader(self.fxaa_shader)
-    love.graphics.draw(target)
+    love.graphics.draw(ptarget, 0, 0, 0, sx, sy)
     love.graphics.setShader()
   else -- no AA
-    love.graphics.setCanvas()
+    love.graphics.setCanvas(target)
     love.graphics.setShader(self.render_shader)
-    love.graphics.draw(source)
+    love.graphics.draw(psource, 0, 0, 0, sx, sy)
     love.graphics.setShader()
   end
+  if target then love.graphics.setCanvas() end
 end
 
 return DPBR

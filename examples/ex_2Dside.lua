@@ -76,7 +76,9 @@ local function draw()
   scene:drawPointLight(x/scene.w*sw, y/scene.h*sh,0,20,200)
   love.graphics.setColor(1,1,1)
 
-  scene:render(0,0,0,1)
+  scene:bindBackgroundPass()
+  love.graphics.clear(0,0,0,1)
+  scene:render()
 end
 
 return tick, draw, "2D side.\n\nModel by Andrew Maximov.\n(http://artisaverb.info/PBT.html)"

@@ -122,7 +122,9 @@ local function draw()
   scene:drawPointLight((scene.w/2+cx)/unit,(scene.h-cy-base/2)/unit,cz,100,20)
   love.graphics.setColor(1,1,1)
 
-  scene:render(0,0,0,1)
+  scene:bindBackgroundPass()
+  love.graphics.clear(0,0,0,1)
+  scene:render()
 end
 
 return tick, draw, "2D pseudo-isometric (dimetric)."
