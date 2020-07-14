@@ -39,11 +39,11 @@ uniform int m_emission_mode;
 
 uniform Image MainTex;
 uniform Image m_normal;
-uniform Image m_MR;
+uniform Image m_MRA;
 uniform Image m_DE;
-uniform float[2] m_MR_args; // metalness and roughness factors
+uniform float[3] m_MRA_args; // metalness, roughness and ambient factors
 uniform float[2] m_DE_args; // depth and emission factor
-uniform int[2] m_color_profiles; // (albedo, MR) (0: linear, 1: sRGB)
+uniform int[2] m_color_profiles; // (albedo, MRA) (0: linear, 1: sRGB)
 
 float normalizeV(float v, float max, int mode)
 {
@@ -78,10 +78,10 @@ void effect()
     albedo.rgb = pow(albedo.rgb, vec3(2.2));
   albedo *= VaryingColor;
 
-  vec4 MR = Texel(m_MR, VaryingTexCoord.xy);
+  vec4 MRA = Texel(m_MRA, VaryingTexCoord.xy);
   if(m_color_profiles[1] == 1) // sRGB, transform to linear
-    MR.rgb = pow(MR.rgb, vec3(2.2));
-  MR.rg *= vec2(m_MR_args[0], m_MR_args[1]); // factors
+    MRA.rgb = pow(MRA.rgb, vec3(2.2));
+  MRA.rgb *= vec3(m_MRA_args[0], m_MRA_args[1], m_MRA_args[2]); // factors
 
   vec4 DE = Texel(m_DE, VaryingTexCoord.xy); // depth + emission
   float depth = denormalizeV(DE.x, m_depth_max, m_depth_mode)+m_DE_args[0];
@@ -89,7 +89,7 @@ void effect()
 
   love_Canvases[0] = albedo;
   love_Canvases[1] = vec4(n*0.5+0.5, albedo.a); // normal
-  love_Canvases[2] = vec4(MR.rgb, albedo.a);
+  love_Canvases[2] = vec4(MRA.rgb, albedo.a);
   love_Canvases[3] = vec4(vec3(m_DE_args[1]*denormalizeV(DE.y, m_emission_max, m_emission_mode)), albedo.a);
 }
 ]]
@@ -107,7 +107,7 @@ uniform int m_emission_mode;
 uniform Image MainTex;
 uniform Image m_DE;
 uniform float[2] m_DE_args; // depth and emission factor
-uniform int[2] m_color_profiles; // (albedo, MR) (0: linear, 1: sRGB)
+uniform int[2] m_color_profiles; // (albedo, MRA) (0: linear, 1: sRGB)
 
 float normalizeV(float v, float max, int mode)
 {
@@ -146,16 +146,21 @@ local LIGHT_SHADER = [[
 uniform float scene_depth;
 uniform int scene_depth_mode;
 uniform mat4 invp_matrix;
+uniform Image BRDF_LUT;
 
 uniform Image MainTex; // albedo
 uniform Image g_depth;
 uniform Image g_normal;
-uniform Image g_MR;
+uniform Image g_MRA;
 uniform Image g_emission;
+uniform CubeImage env_baked_diffuse;
+uniform CubeImage env_baked_specular;
+uniform int env_roughness_levels;
 uniform int l_type;
 uniform float l_intensity;
 uniform vec4 l_pos_rad; // light position (view) and radius
 uniform vec3 l_dir;
+uniform mat3 env_transform;
 
 float denormalizeV(float v, float max, int mode)
 {
@@ -200,9 +205,21 @@ vec3 fresnelSchlick(float HdotV, vec3 F0)
   return F0+(1.0-F0)*pow(1.0-HdotV, 5.0);
 }
 
+// with roughness
+vec3 fresnelSchlick(float HdotV, vec3 F0, float a)
+{
+  return F0+(max(vec3(1.0-a), F0)-F0)*pow(1.0-HdotV, 5.0);
+}
+
 vec3 fresnel(float HdotV, vec3 albedo, float metalness)
 {
   return fresnelSchlick(HdotV, mix(vec3(0.04), albedo, metalness));
+}
+
+// with roughness
+vec3 fresnel(float HdotV, vec3 albedo, float metalness, float a)
+{
+  return fresnelSchlick(HdotV, mix(vec3(0.04), albedo, metalness), a);
 }
 
 // Trowbridge-Reitz GGX normal distribution function
@@ -229,7 +246,7 @@ vec3 cookTorranceSpecular(float NdotH, float NdotV, float NdotL, vec3 fresnel, f
   return distributionGGX(NdotH, a)*geometrySmith(NdotV, NdotL, k)*fresnel/max(4*NdotV*NdotL, 1e-3);
 }
 
-vec3 reflectance(vec3 radiance, float HdotV, float NdotH, float NdotV, float NdotL, vec3 albedo, float metalness, float a, float k)
+vec3 directReflectance(vec3 radiance, float HdotV, float NdotH, float NdotV, float NdotL, vec3 albedo, float metalness, float a, float k)
 {
   vec3 fresnel = fresnel(HdotV, albedo, metalness);
   vec3 kD = vec3(1.0)-fresnel; // kD - kS
@@ -239,57 +256,90 @@ vec3 reflectance(vec3 radiance, float HdotV, float NdotH, float NdotV, float Ndo
   return (kD*albedo/PI+cookTorranceSpecular(NdotH, NdotV, NdotL, fresnel, a, k))*radiance*NdotL;
 }
 
-// helper for point/dir. based lights
+// helper for direct lighting
 // l: light vector (fragment -> light)
-vec3 rayLight(vec3 radiance, vec3 p, vec3 n, vec3 v, vec3 l)
+vec3 rayLight(vec4 albedo, vec4 MRA, vec3 radiance, vec3 p, vec3 n, vec3 v, vec3 l)
 {
-  vec4 albedo = Texel(MainTex, VaryingTexCoord.xy);
-  vec4 MR = Texel(g_MR, VaryingTexCoord.xy);
-
   vec3 h = normalize(l+v);
   float NdotH = max(dot(n,h), 0.0);
   float NdotV = max(dot(n,v), 0.0);
   float NdotL = max(dot(n,l), 0.0);
   float HdotV = max(dot(h,v), 0.0);
-  float a = MR.y*MR.y;
-  float k = (MR.y+1.0)*(MR.y+1.0)/8.0; // direct lighting
+  float a = MRA.y*MRA.y;
+  float k = (MRA.y+1.0)*(MRA.y+1.0)/8.0; // direct lighting
+  return directReflectance(radiance, HdotV, NdotH, NdotV, NdotL, albedo.rgb, MRA.x, a, k);
+}
 
-  return reflectance(radiance, HdotV, NdotH, NdotV, NdotL, albedo.rgb, MR.x, a, k);
+vec3 indirectReflectance(vec3 baked_diffuse, vec3 baked_specular, float NdotV, vec3 albedo, float metalness, float a)
+{
+  vec4 baked_BRDF = Texel(BRDF_LUT, vec2(NdotV, 1.0-sqrt(a)));
+  vec3 fresnel = fresnel(NdotV, albedo, metalness, a);
+  vec3 kD = vec3(1.0)-fresnel; // kD - kS
+  kD *= 1.0-metalness; // tweak
+
+  // Lambertian Cook-Torrance BRDF
+  return kD*albedo*baked_diffuse+baked_specular*(fresnel*baked_BRDF.x+baked_BRDF.y);
+}
+
+// helper for indirect lighting
+// baked_diffuse: pre-computed partial diffuse irradiance without kD and albedo
+// baked_specular: pre-computed partial specular irradiance in function of roughness
+vec3 ambientLight(vec4 albedo, vec4 MRA, vec3 baked_diffuse, vec3 baked_specular, vec3 n, vec3 v)
+{
+  float NdotV = max(dot(n,v), 0.0);
+  float a = MRA.y*MRA.y;
+  return indirectReflectance(baked_diffuse, baked_specular, NdotV, albedo.rgb, MRA.x, a)*MRA.z;
 }
 
 void effect()
 {
   if(l_type == 0){ // ambient
+    vec3 p, n, v;
+    getFragmentPNV(p,n,v);
     vec4 albedo = Texel(MainTex, VaryingTexCoord.xy);
-    love_Canvases[0] = vec4(albedo.rgb*l_intensity*VaryingColor.rgb, 1.0);
+    vec4 MRA = Texel(g_MRA, VaryingTexCoord.xy);
+    vec3 color = l_intensity*VaryingColor.rgb;
+    love_Canvases[0] = vec4(ambientLight(albedo, MRA, color, color, n, v), 1.0);
   }
   else if(l_type == 1){ // point
     vec3 p, n, v;
     getFragmentPNV(p,n,v);
-
+    vec4 albedo = Texel(MainTex, VaryingTexCoord.xy);
+    vec4 MRA = Texel(g_MRA, VaryingTexCoord.xy);
     if(l_pos_rad.w > 0){
       vec3 pl = l_pos_rad.xyz-p;
       float distance = length(pl);
       float falloff_p1 = clamp(1.0-pow(distance/l_pos_rad.w, 4.0), 0.0, 1.0);
       float falloff = falloff_p1*falloff_p1/(distance*distance+1.0);
-      love_Canvases[0] = vec4(rayLight(VaryingColor.rgb*l_intensity*falloff, p, n, v, normalize(pl)), 1.0);
+      love_Canvases[0] = vec4(rayLight(albedo, MRA, VaryingColor.rgb*l_intensity*falloff, p, n, v, normalize(pl)), 1.0);
     }
     else
-      love_Canvases[0] = vec4(rayLight(VaryingColor.rgb*l_intensity, p, n, v, normalize(l_pos_rad.xyz-p)), 1.0);
+      love_Canvases[0] = vec4(rayLight(albedo, MRA, VaryingColor.rgb*l_intensity, p, n, v, normalize(l_pos_rad.xyz-p)), 1.0);
   }
   else if(l_type == 2){ // directional
     vec3 p, n, v;
     getFragmentPNV(p,n,v);
-
-    love_Canvases[0] = vec4(rayLight(VaryingColor.rgb*l_intensity, p, n, v, normalize(-l_dir)), 1.0);
+    vec4 albedo = Texel(MainTex, VaryingTexCoord.xy);
+    vec4 MRA = Texel(g_MRA, VaryingTexCoord.xy);
+    love_Canvases[0] = vec4(rayLight(albedo, MRA, VaryingColor.rgb*l_intensity, p, n, v, normalize(-l_dir)), 1.0);
   }
   else if(l_type == 3){ // emission
     vec4 albedo = Texel(MainTex, VaryingTexCoord.xy);
     float emission = Texel(g_emission, VaryingTexCoord.xy).x;
     love_Canvases[0] = vec4(albedo.rgb*emission*l_intensity*VaryingColor.rgb, 1.0);
   }
-  else if (l_type == 4) // raw
+  else if(l_type == 4) // raw
     love_Canvases[0] = vec4(VaryingColor.rgb*Texel(MainTex, VaryingTexCoord.xy).rgb*l_intensity, 1.0);
+  else if(l_type == 5){ // env
+    vec3 p, n, v;
+    getFragmentPNV(p,n,v);
+    vec4 albedo = Texel(MainTex, VaryingTexCoord.xy);
+    vec4 MRA = Texel(g_MRA, VaryingTexCoord.xy);
+    vec3 lv = env_transform*(n*vec3(1.0,-1.0,1.0));
+    vec3 diffuse_ir = Texel(env_baked_diffuse, lv).rgb*l_intensity*VaryingColor.rgb;
+    vec3 specular_ir = textureLod(env_baked_specular, lv, MRA.y*(env_roughness_levels-1)).rgb*l_intensity*VaryingColor.rgb;
+    love_Canvases[0] = vec4(ambientLight(albedo, MRA, diffuse_ir, specular_ir, n, v), 1.0);
+  }
 }
 ]]
 
@@ -387,7 +437,7 @@ void effect()
     hdr = (hdr*(6.2*hdr+.5))/(hdr*(6.2*hdr+1.7)+0.06);
   }
 
-  // gamma correction
+  // gamma correction (compression)
   if(TMO != 2) // bypass gamma correction (filmic)
     hdr = pow(hdr, vec3(1.0/gamma));
 
@@ -539,7 +589,8 @@ local LIGHTS = {
   POINT = 1,
   DIRECTIONAL = 2,
   EMISSION = 3,
-  RAW = 4
+  RAW = 4,
+  ENVIRONMENT = 5
 }
 
 local TMO = {
@@ -570,9 +621,10 @@ local Scene_meta = {__index = Scene}
 -- All passes must be called, even if not used, in that order:
 --   Material -> Light -> Background -> Blend => Render
 --
+-- All colors must be linear unless an option for other color spaces exists.
 -- If the API is too limited, it is better to write custom shaders and directly
--- call the LÖVE API (ex: ray-marching SDF, different kind of textures, etc.)
--- and work around the library to fill the buffers.
+-- call the LÖVE API and work around the library to fill the buffers (ex:
+-- ray-marching SDF, different kind of textures, etc.).
 --
 -- w,h: render dimensions
 -- settings: (optional) map of settings
@@ -588,7 +640,7 @@ function DPBR.newScene(w, h, settings)
   -- init buffers
   scene.g_albedo = love.graphics.newCanvas(w, h, {format = "rgba8"})
   scene.g_normal = love.graphics.newCanvas(w, h, {format = "rgba8"})
-  scene.g_MR = love.graphics.newCanvas(w, h, {format = "rg8"}) -- metalness + roughness
+  scene.g_MRA = love.graphics.newCanvas(w, h, {format = "rgba8"}) -- metalness + roughness + ambient factor
   scene.g_emission = love.graphics.newCanvas(w, h, {format = "r"..float_type})
   scene.g_depth = love.graphics.newCanvas(w, h, {format = "depth24", readable = true})
   scene.g_light = love.graphics.newCanvas(w, h, {format = "rgba"..float_type})
@@ -627,13 +679,13 @@ function DPBR.newScene(w, h, settings)
   scene.render_shader:send("TMO", 0)
   scene.light_shader:send("g_depth", scene.g_depth)
   scene.light_shader:send("g_normal", scene.g_normal)
-  scene.light_shader:send("g_MR", scene.g_MR)
+  scene.light_shader:send("g_MRA", scene.g_MRA)
   scene.light_shader:send("g_emission", scene.g_emission)
   scene.bloom_extract_shader:send("texel_size", {1/scene.w, 1/scene.h})
   scene.fxaa_shader:send("texel_size", {1/scene.w, 1/scene.h})
   scene.fxaa_shader:send("g_luma", scene.g_luma)
 
-  scene:setBloom(0.8, 0.5, 6.5, 0.1)
+  scene:setBloom(0.8, 0.5, 6.5, 0.05)
   scene:setFXAA(0.0312, 0.125, 0.75)
   scene:setAntiAliasing("none")
   scene:setMaterialColorProfiles("sRGB", "linear")
@@ -664,7 +716,7 @@ function Scene:setDepth(mode, depth)
 end
 
 -- Set projection and inverse projection matrices.
--- matrix format: mat4x4, columns are vectors, list of values in row-major order
+-- matrix format: mat4, columns are vectors, list of values in row-major order
 function Scene:setProjection(projection, inv_projection)
   self.projection, self.inv_projection = projection, inv_projection
   self.light_shader:send("invp_matrix", self.inv_projection)
@@ -696,6 +748,17 @@ function Scene:setProjection2D(depth, mode, sw, sh)
   self:setDepth(mode, depth)
 end
 
+-- Set ambient/indirect lighting BRDF lookup texture.
+-- The BRDF integration LUT is a precomputed texture in the context of the
+-- split-sum approximation for the specular part of the reflectance equation
+-- (for ambient / image-based lighting). The texture is sampled with (dot(n,v),
+-- roughness) and a bottom-left origin.
+--
+-- LUT: texture
+function Scene:setAmbientBRDF(LUT)
+  self.light_shader:send("BRDF_LUT", LUT)
+end
+
 -- Set gamma used for correction.
 -- (ignored by "filmic" TMO)
 function Scene:setGamma(gamma)
@@ -717,7 +780,7 @@ function Scene:setToneMapping(tmo)
 end
 
 -- Configure bloom.
--- Scene default is (0.8,0.5,6.5,0.1).
+-- Scene default is (0.8,0.5,6.5,0.05).
 --
 -- threshold: level of brightness
 -- knee: 0-1 (0: hard threshold, 1: soft threshold)
@@ -744,13 +807,13 @@ function Scene:setBloom(threshold, knee, radius, intensity, safe_clamp)
 end
 
 -- Set material textures color profiles.
--- Scene default is "sRGB" for color/albedo and "linear" for MR.
+-- Scene default is "sRGB" for color/albedo and "linear" for MRA.
 -- Normal, depth and emission maps must be linear (color wise).
 --
--- color, MR: color space string ("sRGB" or "linear")
-function Scene:setMaterialColorProfiles(color, MR)
-  self.material_shader:send("m_color_profiles", color == "sRGB" and 1 or 0, MR == "sRGB" and 1 or 0)
-  self.blend_shader:send("m_color_profiles", color == "sRGB" and 1 or 0, MR == "sRGB" and 1 or 0)
+-- color, MRA: color space string ("sRGB" or "linear")
+function Scene:setMaterialColorProfiles(color, MRA)
+  self.material_shader:send("m_color_profiles", color == "sRGB" and 1 or 0, MRA == "sRGB" and 1 or 0)
+  self.blend_shader:send("m_color_profiles", color == "sRGB" and 1 or 0, MRA == "sRGB" and 1 or 0)
 end
 
 -- Define how the material depth is interpreted.
@@ -820,7 +883,7 @@ end
 
 -- Bind canvases and shader.
 -- The material pass is the process of writing the albedo/shape (RGBA), normal,
--- metalness/roughness and depth/emission of objects to the G-buffer.
+-- metalness/roughness/AO and depth/emission of objects to the G-buffer.
 --
 -- The albedo texture is to be used with LÖVE draw calls, it defines the albedo
 -- and shape (alpha, 0 discard pixels) of the object (affected by LÖVE color).
@@ -829,7 +892,7 @@ function Scene:bindMaterialPass()
   love.graphics.setCanvas({
     self.g_albedo,
     self.g_normal,
-    self.g_MR,
+    self.g_MRA,
     self.g_emission,
     depthstencil = self.g_depth
   })
@@ -847,14 +910,22 @@ function Scene:bindMaterialN(normal_map)
   self.material_shader:send("m_normal", normal_map)
 end
 
--- Bind metalness/roughness map.
--- MR_map: 2-components texture (metalness + roughness, RG8 format recommended)
+-- Bind metalness/roughness/AO map.
+-- The metalness sets the material as dielectric/insulator or
+-- metallic/conductor (0: dielectric, 1: metallic).
+-- The roughness determines the surface roughness (0-1).
+-- The ambient factor determines the final intensity of ambient/indirect
+-- lighting (also known as ambient occlusion, 0: full occlusion, 1: no
+-- occlusion).
+--
+-- MRA_map: 3-components texture (metalness + roughness + ambient factor, RGBA8 format recommended)
 -- metalness: (optional) metalness factor (default: 1)
 -- roughness: (optional) roughness factor (default: 1)
-function Scene:bindMaterialMR(MR_map, metalness, roughness)
+-- ambient: (optional) ambient factor (default: 1)
+function Scene:bindMaterialMRA(MRA_map, metalness, roughness, ambient)
   local s = self.material_shader
-  s:send("m_MR", MR_map)
-  s:send("m_MR_args", metalness or 1, roughness or 1)
+  s:send("m_MRA", MRA_map)
+  s:send("m_MRA_args", metalness or 1, roughness or 1, ambient or 1)
 end
 
 -- Bind depth/emission map.
@@ -891,6 +962,22 @@ end
 function Scene:drawAmbientLight(intensity)
   self.light_shader:send("l_type", LIGHTS.AMBIENT)
   self.light_shader:send("l_intensity", intensity)
+  love.graphics.draw(self.g_albedo)
+end
+
+-- Image-based lighting (IBL).
+-- (uses LÖVE color)
+--
+-- baked_diffuse: partial diffuse irradiance cubemap (without kD and albedo)
+-- baked_specular: partial specular irradiance cubemap with mipmaps in function of roughness
+-- transform: (optional) mat3 rotation applied to the lookup vector (columns are vectors, list of values in row-major order)
+function Scene:drawEnvironmentLight(baked_diffuse, baked_specular, intensity, transform)
+  self.light_shader:send("l_type", LIGHTS.ENVIRONMENT)
+  self.light_shader:send("l_intensity", intensity)
+  self.light_shader:send("env_baked_diffuse", baked_diffuse)
+  self.light_shader:send("env_baked_specular", baked_specular)
+  self.light_shader:send("env_roughness_levels", baked_specular:getMipmapCount())
+  self.light_shader:send("env_transform", transform or {1,0,0,0,1,0,0,0,1})
   love.graphics.draw(self.g_albedo)
 end
 

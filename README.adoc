@@ -22,7 +22,7 @@ NOTE: This library is at the frontier between 2D and 3D, so the workflow can be 
 - 3D meshes / SDF ray-marching: use the library as the pipeline for the final rendering
 - ...
 
-See link:examples[] (copy the library and launch the directory with LÖVE).
+See link:examples[] (copy the library, install https://github.com/ImagicTheCat/MGL[MGL] and launch the directory with LÖVE).
 
 [link=https://www.youtube.com/watch?v=SpACS-HFUb8]
 .Examples video
@@ -47,13 +47,14 @@ See link:src[].
 -- All passes must be called, even if not used, in that order:
 --   Material -> Light -> Background -> Blend => Render
 --
+-- All colors must be linear unless an option for other color spaces exists.
 -- If the API is too limited, it is better to write custom shaders and directly
--- call the LÖVE API (ex: ray-marching SDF, different kind of textures, etc.)
--- and work around the library to fill the buffers.
+-- call the LÖVE API and work around the library to fill the buffers (ex:
+-- ray-marching SDF, different kind of textures, etc.).
 --
 -- w,h: render dimensions
 -- settings: (optional) map of settings
---- half_float: flag, use "16f" instead of "32f" for floating-point textures
+--- half_float: flag, use "16f" instead of "32f" for floating-point buffers
 -- return Scene
 M.newScene(w, h, settings)
 ----
@@ -87,7 +88,7 @@ self.g_luma
 Scene:setDepth(mode, depth)
 
 -- Set projection and inverse projection matrices.
--- matrix format: mat4x4, columns are vectors, list of values in row-major order
+-- matrix format: mat4, columns are vectors, list of values in row-major order
 Scene:setProjection(projection, inv_projection)
 
 -- Set orthographic projection (top-left origin).
@@ -100,6 +101,15 @@ Scene:setProjection(projection, inv_projection)
 -- mode: (optional) scene depth mode (default: "log", see Scene:setDepth)
 -- sw, sh: (optional) scene view dimensions (default: w, h)
 Scene:setProjection2D(depth, mode, sw, sh)
+
+-- Set ambient/indirect lighting BRDF lookup texture.
+-- The BRDF integration LUT is a precomputed texture in the context of the
+-- split-sum approximation for the specular part of the reflectance equation
+-- (for ambient / image-based lighting). The texture is sampled with (dot(n,v),
+-- roughness) and a bottom-left origin.
+--
+-- LUT: texture
+Scene:setAmbientBRDF(LUT)
 
 -- Set gamma used for correction.
 -- (ignored by "filmic" TMO)
@@ -116,7 +126,7 @@ Scene:setExposure(exposure)
 Scene:setToneMapping(tmo)
 
 -- Configure bloom.
--- Scene default is (0.8,0.5,6.5,0.1).
+-- Scene default is (0.8,0.5,6.5,0.05).
 --
 -- threshold: level of brightness
 -- knee: 0-1 (0: hard threshold, 1: soft threshold)
@@ -126,11 +136,11 @@ Scene:setToneMapping(tmo)
 Scene:setBloom(threshold, knee, radius, intensity, safe_clamp)
 
 -- Set material textures color profiles.
--- Scene default is "sRGB" for albedo and "linear" for MR.
+-- Scene default is "sRGB" for color/albedo and "linear" for MRA.
 -- Normal, depth and emission maps must be linear (color wise).
 --
--- albedo, MR: color space string ("sRGB" or "linear")
-Scene:setMaterialColorProfiles(albedo, MR)
+-- color, MRA: color space string ("sRGB" or "linear")
+Scene:setMaterialColorProfiles(color, MRA)
 
 -- Define how the material depth is interpreted.
 -- Scene default: "raw".
@@ -179,7 +189,7 @@ Scene:setAntiAliasing(mode)
 
 -- Bind canvases and shader.
 -- The material pass is the process of writing the albedo/shape (RGBA), normal,
--- metalness/roughness and depth/emission of objects to the G-buffer.
+-- metalness/roughness/AO and depth/emission of objects to the G-buffer.
 --
 -- The albedo texture is to be used with LÖVE draw calls, it defines the albedo
 -- and shape (alpha, 0 discard pixels) of the object (affected by LÖVE color).
@@ -191,11 +201,19 @@ Scene:bindMaterialPass()
 -- normal_map: 3-components texture (RGBA8 format recommended)
 Scene:bindMaterialN(normal_map)
 
--- Bind metalness/roughness map.
--- MR_map: 2-components texture (metalness + roughness, RG8 format recommended)
+-- Bind metalness/roughness/AO map.
+-- The metalness sets the material as dielectric/insulator or
+-- metallic/conductor (0: dielectric, 1: metallic).
+-- The roughness determines the surface roughness (0-1).
+-- The ambient factor determines the final intensity of ambient/indirect
+-- lighting (also known as ambient occlusion, 0: full occlusion, 1: no
+-- occlusion).
+--
+-- MRA_map: 3-components texture (metalness + roughness + ambient factor, RGBA8 format recommended)
 -- metalness: (optional) metalness factor (default: 1)
 -- roughness: (optional) roughness factor (default: 1)
-Scene:bindMaterialMR(MR_map, metalness, roughness)
+-- ambient: (optional) ambient factor (default: 1)
+Scene:bindMaterialMRA(MRA_map, metalness, roughness, ambient)
 
 -- Bind depth/emission map.
 --
@@ -210,6 +228,14 @@ Scene:bindLightPass()
 
 -- (uses LÖVE color)
 Scene:drawAmbientLight(intensity)
+
+-- Image-based lighting (IBL).
+-- (uses LÖVE color)
+--
+-- baked_diffuse: partial diffuse irradiance cubemap (without kD and albedo)
+-- baked_specular: partial specular irradiance cubemap with mipmaps in function of roughness
+-- transform: (optional) mat3 rotation applied to the lookup vector (columns are vectors, list of values in row-major order)
+Scene:drawEnvironmentLight(baked_diffuse, baked_specular, intensity, transform)
 
 -- (uses LÖVE color)
 Scene:drawPointLight(x, y, z, radius, intensity)
@@ -246,6 +272,22 @@ Scene:bindBlendPass()
 -- target: (optional) target canvas (on screen otherwise)
 Scene:render(target)
 ----
+
+== Guidance
+
+=== Ambient / environment lighting
+
+For ambient / indirect lighting, the BRDF lookup texture must be loaded. One can be generated using link:tools/bake.lua[] or the precomputed link:examples/BRDF_LUT.exr[] can be re-used (16-bit float, 512x512, 1024 samples).
+
+For environment / IBL (image-based lighting), the partial diffuse and specular irradiance must be computed into two cubemaps.
+
+.https://github.com/dariomanesku/cmftStudio[cmftStudio] can be used to compute the cubemaps:
+- Make sure to keep the HDRI in linear color space for all processing.
+- The _Irradiance_ cubemap is the diffuse cubemap.
+- The _Radiance_ cubemap is the specular cubemap. Unfortunately, *cmft* doesn't seem to support the Cook-Torrance BRDF used in this library; the _blinnBRDF_ lighting model is probably the closest available.
+- Very high intensity in the input HDRI can give invalid outputs, clipping may be needed.
+
+NOTE: The examples environment cubemaps are computed from https://hdrihaven.com/hdri/?c=nature&h=greenwich_park_02[Greenwich Park 02] from HDRIHaven.
 
 == References
 

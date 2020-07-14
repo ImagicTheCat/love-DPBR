@@ -5,11 +5,12 @@ local scene = DPBR.newScene(1280, 720)
 scene:setProjection2D(10, "log", sw, sh)
 scene:setToneMapping("filmic")
 scene:setAntiAliasing("FXAA")
+scene:setAmbientBRDF(love.graphics.newImage("BRDF_LUT.exr"))
 
 local t_albedo = love.graphics.newImage("object_albedo.png")
 local t_normal = love.graphics.newImage("object_normal.png")
 local t_DE = love.graphics.newImage("object_DE.exr")
-local t_MR = love.graphics.newImage("object_MR.png")
+local t_MRA = love.graphics.newImage("object_MRA.png")
 
 love.physics.setMeter(1)
 local world = love.physics.newWorld(0,9.8)
@@ -57,7 +58,7 @@ local function draw()
 
   scene:bindMaterialPass()
   scene:bindMaterialN(t_normal)
-  scene:bindMaterialMR(t_MR)
+  scene:bindMaterialMRA(t_MRA)
   scene:bindMaterialDE(t_DE)
 
   for _, body in ipairs(objects) do
@@ -69,11 +70,11 @@ local function draw()
   end
 
   scene:bindLightPass()
-  scene:drawAmbientLight(0.1)
+  scene:drawAmbientLight(0.075)
   scene:drawEmissionLight()
 
   love.graphics.setColor(HSL(0.04,1,0.52))
-  scene:drawPointLight(x/scene.w*sw, y/scene.h*sh,0,20,200)
+  scene:drawPointLight(x/scene.w*sw, y/scene.h*sh,0,50,250)
   love.graphics.setColor(1,1,1)
 
   scene:bindBackgroundPass()

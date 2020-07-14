@@ -13,7 +13,14 @@ function HSL(h,s,l,a)
 	end return r+m,g+m,b+m,a
 end
 
+function createPixelTexture(format, ...)
+  local data = love.image.newImageData(1, 1, format)
+  data:setPixel(0, 0, ...)
+  return love.graphics.newImage(data)
+end
+
 local examples = {
+  "ex_spheres",
   "ex_scene",
   "ex_2Dside",
   "ex_2Dpiso"

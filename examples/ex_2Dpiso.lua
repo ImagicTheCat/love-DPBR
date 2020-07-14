@@ -7,9 +7,9 @@ local scene = DPBR.newScene(1280, 720)
 scene:setProjection2D(100, "log", sw, sh)
 scene:setToneMapping("filmic")
 scene:setAntiAliasing("FXAA")
-scene:setBloom(0.8,0.5,6.5,0.05)
+scene:setAmbientBRDF(love.graphics.newImage("BRDF_LUT.exr"))
 
-local t_MR = love.graphics.newImage("default_MR.png")
+local t_MRA = createPixelTexture("rgba8", 1, 1, 1)
 
 -- Convert pseudo-iso 3D coordinates to screen coordinates (top->left, bottom->top, view->far).
 -- (0,0,0) => (0,0,0)
@@ -99,7 +99,7 @@ local function draw()
     local tile, dir, x, y, z, r, g, b, metalness, roughness = unpack(mtile)
     love.graphics.setColor(r,g,b)
     scene:bindMaterialN(tile.normal)
-    scene:bindMaterialMR(t_MR, metalness, roughness)
+    scene:bindMaterialMRA(t_MRA, metalness, roughness)
     scene:bindMaterialDE(tile.DE, z+depth_bias, 0)
     love.graphics.draw(tile.albedo, quads[dir], scene.w/2-base/2+x, scene.h-y-tile.albedo:getHeight())
   end
