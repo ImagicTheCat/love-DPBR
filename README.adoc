@@ -24,7 +24,7 @@ NOTE: This library is at the frontier between 2D and 3D, so the workflow can be 
 
 See link:examples[] (copy the library, install https://github.com/ImagicTheCat/MGL[MGL] and launch the directory with LÖVE).
 
-[link=https://www.youtube.com/watch?v=SpACS-HFUb8]
+[link=https://www.youtube.com/watch?v=SpACS-HFUb8&list=PLYgVPYnLMeTp8X2S-AVmoMhTzVxuv74Vt]
 .Examples video
 image::https://img.youtube.com/vi/SpACS-HFUb8/0.jpg[]
 
@@ -112,10 +112,11 @@ Scene:setProjection2D(depth, mode, sw, sh)
 Scene:setAmbientBRDF(LUT)
 
 -- Set gamma used for correction.
--- (ignored by "filmic" TMO)
+-- (scene default: 2.2, ignored by "filmic" TMO)
 Scene:setGamma(gamma)
 
 -- Set exposure adjustment.
+-- (scene default: 1)
 Scene:setExposure(exposure)
 
 -- Set tone mapping operator.
@@ -196,7 +197,9 @@ Scene:setAntiAliasing(mode)
 Scene:bindMaterialPass()
 
 -- Bind normal map.
--- The normal map must be in view space (X left->right, Y bottom->top, Z far->view).
+-- The normal map must be in view space and encoded as (X,-Y,-Z) between 0-1.
+-- It implies (X right, Y up, Z out) for the 2D projection (to match 2D normal
+-- maps).
 --
 -- normal_map: 3-components texture (RGBA8 format recommended)
 Scene:bindMaterialN(normal_map)
@@ -234,7 +237,7 @@ Scene:drawAmbientLight(intensity)
 --
 -- baked_diffuse: partial diffuse irradiance cubemap (without kD and albedo)
 -- baked_specular: partial specular irradiance cubemap with mipmaps in function of roughness
--- transform: (optional) mat3 rotation applied to the lookup vector (columns are vectors, list of values in row-major order)
+-- transform: (optional) mat3 rotation applied to the lookup vector (the normal) (columns are vectors, list of values in row-major order)
 Scene:drawEnvironmentLight(baked_diffuse, baked_specular, intensity, transform)
 
 -- (uses LÖVE color)

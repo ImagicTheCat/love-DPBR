@@ -3,6 +3,7 @@ local mgl = require("MGL")
 mgl.gen_vec(3); mgl.gen_mat(3)
 mgl.gen_mat(4)
 
+local app = {info = "Material spheres."}
 local scene = DPBR.newScene(1280,720)
 scene:setProjection2D(50, "log", 10, 10*9/16)
 scene:setToneMapping("filmic")
@@ -19,6 +20,7 @@ env_specular:setMipmapFilter("linear")
 
 local ax = mgl.vec3(1,0,0)
 local ay = mgl.vec3(0,1,0)
+local az = mgl.vec3(0,0,1)
 
 local function draw_line(x, y, count, color, metalness)
   scene:bindMaterialN(t_normal)
@@ -31,10 +33,10 @@ local function draw_line(x, y, count, color, metalness)
   love.graphics.setColor(1,1,1)
 end
 
-local function tick(dt)
+function app.tick(dt)
 end
 
-local function draw()
+function app.draw()
   local x,y = love.mouse.getPosition()
   local time = love.timer.getTime()
 
@@ -48,7 +50,7 @@ local function draw()
   draw_line(40, 120*5, 10, {1,0,0}, 1)
 
   scene:bindLightPass()
-  local tr = mgl.mat3(mgl.rotate(ax, (y/720-0.5)*math.pi)*mgl.rotate(ay, (x/1280-0.5)*math.pi*2))
+  local tr = mgl.mat3(mgl.rotate(ax, (y/720-0.5)*math.pi)*mgl.rotate(ay, (x/1280-0.5)*math.pi*2))*mgl.mat3(ax,-ay,az)
   scene:drawEnvironmentLight(env_diffuse, env_specular, 1, tr)
 
   scene:bindBackgroundPass()
@@ -57,4 +59,4 @@ local function draw()
   scene:render()
 end
 
-return tick, draw, "Spheres."
+return app

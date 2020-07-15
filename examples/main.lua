@@ -23,36 +23,53 @@ local examples = {
   "ex_spheres",
   "ex_scene",
   "ex_2Dside",
-  "ex_2Dpiso"
+  "ex_2Dpiso",
+  "ex_SDF_spheres",
+  "ex_SDF_mandelbulb"
 }
 
 local index = 1
-local tick, draw
-local text
+local text_info
+local text_stats
+local app
 
 function love.load()
-  local desc
-  tick, draw, desc = love.filesystem.load(examples[index]..".lua")()
-  text = love.graphics.newText(love.graphics.getFont(), "[SPACE] to switch examples\n"..desc)
+  app = love.filesystem.load(examples[index]..".lua")()
+  text_info = love.graphics.newText(love.graphics.getFont(), "[SPACE] to switch examples\n"..app.info)
+  text_stats = love.graphics.newText(love.graphics.getFont())
 end
 
 function love.update(dt)
-  tick(dt)
+  app.tick(dt)
+  text_stats:set(love.timer.getFPS().." FPS\n"..(app.stats or ""))
 end
 
 function love.draw()
-  draw()
+  app.draw()
+  -- info
   love.graphics.setColor(0,0,0,0.75)
-  love.graphics.rectangle("fill", 0,0, text:getWidth()+8, text:getHeight()+8)
+  love.graphics.rectangle("fill", 0,0, text_info:getWidth()+8, text_info:getHeight()+8)
   love.graphics.setColor(1,1,1)
-  love.graphics.draw(text, 4, 4)
+  love.graphics.draw(text_info, 4, 4)
+
+  -- stats
+  love.graphics.setColor(0,0,0,0.75)
+  love.graphics.rectangle("fill", 1280-text_stats:getWidth()-8, 0, text_stats:getWidth()+8, text_stats:getHeight()+8)
+  love.graphics.setColor(1,1,1)
+  love.graphics.draw(text_stats, 1280-text_stats:getWidth()-4, 4)
 end
 
 function love.keypressed(keycode, scancode, isrepeat)
   if keycode == "space" then
     index = index%#examples+1
-    local desc
-    tick, draw, desc = love.filesystem.load(examples[index]..".lua")()
-    text:set("[SPACE] to switch examples\n"..desc)
+    if app.close then app.close() end
+    app = love.filesystem.load(examples[index]..".lua")()
+    text_info:set("[SPACE] to switch examples\n"..app.info)
+  else
+    if app.keypressed then app.keypressed(keycode, scancode, isrepeat) end
   end
+end
+
+function love.mousemoved(...)
+  if app.mousemoved then app.mousemoved(...) end
 end

@@ -181,17 +181,15 @@ void getFragmentPNV(out vec3 p, out vec3 n, out vec3 v)
   ndc = ndc*2.0-vec3(1.0);
 
   vec4 p4 = invp_matrix*vec4(ndc, 1.0);
-  p4.z = -p4.z;
   p = vec3(p4/p4.w);
 
   // normal
   n = normalize(Texel(g_normal, VaryingTexCoord.xy).xyz*2.0-vec3(1.0))*vec3(1.0,-1.0,-1.0);
 
   // view
-  vec4 vp = invp_matrix*vec4(ndc.xy, -1.0, 1.0);
-  vp.z = -vp.z;
+  vec4 vp = invp_matrix*vec4(ndc.xy, 1.0, 1.0);
   vp /= vp.w;
-  v = normalize(vec3(vp)-p);
+  v = -normalize(vec3(vp));
 }
 
 // PBR functions
@@ -321,7 +319,7 @@ void effect()
     getFragmentPNV(p,n,v);
     vec4 albedo = Texel(MainTex, VaryingTexCoord.xy);
     vec4 MRA = Texel(g_MRA, VaryingTexCoord.xy);
-    love_Canvases[0] = vec4(rayLight(albedo, MRA, VaryingColor.rgb*l_intensity, p, n, v, normalize(-l_dir)), 1.0);
+    love_Canvases[0] = vec4(rayLight(albedo, MRA, VaryingColor.rgb*l_intensity, p, n, v, -normalize(l_dir)), 1.0);
   }
   else if(l_type == 3){ // emission
     vec4 albedo = Texel(MainTex, VaryingTexCoord.xy);
@@ -335,7 +333,7 @@ void effect()
     getFragmentPNV(p,n,v);
     vec4 albedo = Texel(MainTex, VaryingTexCoord.xy);
     vec4 MRA = Texel(g_MRA, VaryingTexCoord.xy);
-    vec3 lv = env_transform*(n*vec3(1.0,-1.0,1.0));
+    vec3 lv = env_transform*n;
     vec3 diffuse_ir = Texel(env_baked_diffuse, lv).rgb*l_intensity*VaryingColor.rgb;
     vec3 specular_ir = textureLod(env_baked_specular, lv, MRA.y*(env_roughness_levels-1)).rgb*l_intensity*VaryingColor.rgb;
     love_Canvases[0] = vec4(ambientLight(albedo, MRA, diffuse_ir, specular_ir, n, v), 1.0);
@@ -737,12 +735,12 @@ function Scene:setProjection2D(depth, mode, sw, sh)
   self:setProjection({
     2/sw, 0, 0, -1,
     0, -2/sh, 0, 1,
-    0, 0, -2/depth, -1,
+    0, 0, 2/depth, -1,
     0, 0, 0, 1
   }, {
     sw/2, 0, 0, sw/2,
     0, -sh/2, 0, sh/2,
-    0, 0, -depth/2, -depth/2,
+    0, 0, depth/2, depth/2,
     0, 0, 0, 1
   })
   self:setDepth(mode, depth)
@@ -760,12 +758,13 @@ function Scene:setAmbientBRDF(LUT)
 end
 
 -- Set gamma used for correction.
--- (ignored by "filmic" TMO)
+-- (scene default: 2.2, ignored by "filmic" TMO)
 function Scene:setGamma(gamma)
   self.render_shader:send("gamma", gamma)
 end
 
 -- Set exposure adjustment.
+-- (scene default: 1)
 function Scene:setExposure(exposure)
   self.render_shader:send("exposure", exposure)
 end
@@ -903,7 +902,9 @@ function Scene:bindMaterialPass()
 end
 
 -- Bind normal map.
--- The normal map must be in view space (X left->right, Y bottom->top, Z far->view).
+-- The normal map must be in view space and encoded as (X,-Y,-Z) between 0-1.
+-- It implies (X right, Y up, Z out) for the 2D projection (to match 2D normal
+-- maps).
 --
 -- normal_map: 3-components texture (RGBA8 format recommended)
 function Scene:bindMaterialN(normal_map)
@@ -970,7 +971,7 @@ end
 --
 -- baked_diffuse: partial diffuse irradiance cubemap (without kD and albedo)
 -- baked_specular: partial specular irradiance cubemap with mipmaps in function of roughness
--- transform: (optional) mat3 rotation applied to the lookup vector (columns are vectors, list of values in row-major order)
+-- transform: (optional) mat3 rotation applied to the lookup vector (the normal) (columns are vectors, list of values in row-major order)
 function Scene:drawEnvironmentLight(baked_diffuse, baked_specular, intensity, transform)
   self.light_shader:send("l_type", LIGHTS.ENVIRONMENT)
   self.light_shader:send("l_intensity", intensity)

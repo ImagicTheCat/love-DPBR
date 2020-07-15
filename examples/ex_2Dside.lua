@@ -1,5 +1,6 @@
 local DPBR = require("love-DPBR")
 
+local app = {info = "2D side.\n\nModel by Andrew Maximov.\n(http://artisaverb.info/PBT.html)"}
 local sw, sh = 1280/100, 720/100
 local scene = DPBR.newScene(1280, 720)
 scene:setProjection2D(10, "log", sw, sh)
@@ -47,13 +48,14 @@ for i=1,100 do
   table.insert(objects, obj)
 end
 
-local function tick(dt)
+
+function app.tick(dt)
   local x,y = love.mouse.getPosition()
   cursor_joint:setTarget(x/100, y/100)
   world:update(dt)
 end
 
-local function draw()
+function app.draw()
   local x,y = love.mouse.getPosition()
 
   scene:bindMaterialPass()
@@ -83,4 +85,4 @@ local function draw()
   scene:render()
 end
 
-return tick, draw, "2D side.\n\nModel by Andrew Maximov.\n(http://artisaverb.info/PBT.html)"
+return app

@@ -1,5 +1,6 @@
 local DPBR = require("love-DPBR")
 
+local app = {info = "2D pseudo-isometric (dimetric)."}
 local base = 128 -- x diagonal of base tile in pixels
 local unit = base/math.sqrt(2) -- pixels per meter
 local sw, sh = 1280/unit, 720/unit
@@ -86,10 +87,10 @@ for i=0,map_size-1 do
   end
 end
 
-local function tick(dt)
+function app.tick(dt)
 end
 
-local function draw()
+function app.draw()
   local mx,my = love.mouse.getPosition()
   local time = love.timer.getTime()
 
@@ -127,4 +128,4 @@ local function draw()
   scene:render()
 end
 
-return tick, draw, "2D pseudo-isometric (dimetric)."
+return app
