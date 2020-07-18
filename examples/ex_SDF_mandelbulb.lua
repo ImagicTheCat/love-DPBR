@@ -29,7 +29,7 @@ local shader = love.graphics.newShader([[
 #pragma language glsl3
 
 uniform mat4 proj, inv_proj, view, inv_view;
-uniform float max_depth;
+uniform float zfar, hfov;
 uniform int max_steps;
 
 float mandelbulbSDF(vec3 p)
@@ -69,15 +69,16 @@ float sceneSDF(vec3 p)
   return mandelbulbSDF(p/50)*50; // scale
 }
 
+// fe: epsilon factor (compute epsilon in function of depth)
 // return intersection position
-vec3 rayMarch(vec3 start, vec3 ray, int max_steps, float epsilon, float max_depth)
+vec3 rayMarch(vec3 start, vec3 ray, int max_steps, float fe, float max_depth)
 {
   float depth = 0;
   vec3 p = start;
   // ray-march scene
   for(int i = 0; i < max_steps; i++){
     float dist = sceneSDF(p);
-    if(dist < epsilon)
+    if(dist < depth*fe)
       return p;
     else{
       depth += dist;
@@ -90,9 +91,9 @@ vec3 rayMarch(vec3 start, vec3 ray, int max_steps, float epsilon, float max_dept
   return start+ray*max_depth;
 }
 
-vec3 computeNormal(vec3 p)
+vec3 computeNormal(vec3 p, float h)
 {
-  const float h = 0.0001; // replace by an appropriate value
+//  const float h = 0.0001; // replace by an appropriate value
   const vec2 k = vec2(1,-1);
   return normalize(k.xyy * sceneSDF(p + k.xyy*h)
     + k.yyx * sceneSDF(p + k.yyx*h)
@@ -112,10 +113,14 @@ void effect()
   vec3 ray = normalize(v.xyz);
   vec3 w_ray = mat3(inv_view)*ray;
 
-  vec3 p = rayMarch(w_start, w_ray, max_steps, 0.001, max_depth);
-  if(length(p-w_start) >= max_depth-1) discard;
+  float max_depth = zfar/cos(hfov/2.0);
+  // compute epsilon factor: fe*dist = approximation of the width covered by a pixel (used as epsilon)
+  float fe = 2.0*cos(atan(abs(v.x)/abs(v.z)))*tan(hfov/2.0)/love_ScreenSize.x;
+  vec3 p = rayMarch(w_start, w_ray, max_steps, fe, max_depth);
+  float p_dist = length(p-w_start);
+  if(p_dist >= max_depth-1) discard;
 
-  vec3 w_n = computeNormal(p);
+  vec3 w_n = computeNormal(p, p_dist*fe);
   vec3 n = mat3(view)*w_n;
 
   vec4 p_ndc = proj*view*vec4(p, 1);
@@ -135,7 +140,8 @@ void effect()
 ]])
 shader:send("proj", proj)
 shader:send("inv_proj", inv_proj)
-shader:send("max_depth", 500)
+shader:send("zfar", 100)
+shader:send("hfov", math.pi/2)
 
 local max_steps = 128
 shader:send("max_steps", max_steps)
