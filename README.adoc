@@ -11,9 +11,7 @@ endif::[]
 
 `love-DPBR` is a **D**eferred **P**hysically **B**ased **R**endering LÖVE library.
 
-It aims to be a simple and versatile tool to render 2D/3D with PBR.
-
-NOTE: This library is at the frontier between 2D and 3D, so the workflow can be atypical.
+At the frontier between 2D and 3D, it aims to be a simple and versatile tool to do PBR rendering. It doesn't aim to be a 3D rendering engine.
 
 .Use case examples
 - 3D baked scene: Point&Click, title screen, etc.
